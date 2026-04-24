@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Food Decision</title>
+  <style>
+    :root {
+      --bg: #f4f7f2;
+      --surface: #ffffff;
+      --text: #153024;
+      --muted: #5f7468;
+      --accent: #1f8f5f;
+      --accent-soft: #e3f5eb;
+      --border: #d9e5dd;
+      --radius: 16px;
+      --shadow: 0 10px 30px rgba(25, 55, 40, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      background: radial-gradient(circle at top right, #e8f6ee 0%, var(--bg) 45%);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .app {
+      width: min(100%, 760px);
+      margin: 0 auto;
+      padding: 20px 16px 28px;
+    }
+
+    .title {
+      margin: 0 0 6px;
+      font-size: 1.7rem;
+      letter-spacing: 0.2px;
+    }
+
+    .subtitle {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 0.98rem;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+
+    .section-label {
+      margin: 0 0 10px;
+      font-size: 0.95rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .choices {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .choice-btn {
+      border: 1px solid var(--border);
+      background: #fdfefd;
+      color: var(--text);
+      font-size: 1rem;
+      padding: 14px 16px;
+      border-radius: 12px;
+      min-height: 52px;
+      min-width: 120px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.15s ease, background-color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .choice-btn:active {
+      transform: scale(0.98);
+    }
+
+    .choice-btn.selected {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: #0f4c31;
+    }
+
+    .action {
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      padding: 16px;
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(135deg, #1f8f5f, #197b50);
+      box-shadow: 0 10px 20px rgba(31, 143, 95, 0.25);
+      cursor: pointer;
+      min-height: 54px;
+      margin: 8px 0 6px;
+    }
+
+    .actions {
+      display: grid;
+      gap: 10px;
+      margin-top: 6px;
+    }
+
+    .action.secondary {
+      background: linear-gradient(135deg, #146844, #0f5537);
+      color: #ffffff;
+      box-shadow: 0 10px 20px rgba(15, 85, 55, 0.28);
+    }
+
+    .action:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+
+    .status {
+      color: var(--muted);
+      margin: 10px 2px 0;
+      font-size: 0.93rem;
+      min-height: 20px;
+    }
+
+    .ready-text {
+      margin: 12px 2px 0;
+      font-size: 1rem;
+      font-weight: 700;
+      color: #0f4c31;
+    }
+
+    .tap-hint {
+      margin: 8px 2px 0;
+      font-size: 0.85rem;
+      color: var(--muted);
+      display: none;
+    }
+
+    .results {
+      margin-top: 14px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      box-shadow: var(--shadow);
+      cursor: pointer;
+    }
+
+    .card.highlighted {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      box-shadow: 0 14px 30px rgba(31, 143, 95, 0.2);
+    }
+
+    .card.best-choice {
+      padding: 20px;
+      border-width: 2px;
+      transform: scale(1.02);
+    }
+
+    .best-badge {
+      display: inline-block;
+      margin: 0 0 10px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 0.83rem;
+      font-weight: 700;
+      color: #0f4c31;
+      background: #d5f2e2;
+      border: 1px solid #9dd5b8;
+    }
+
+    .card h3 {
+      margin: 0 0 7px;
+      font-size: 1.08rem;
+    }
+
+    .meta {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+
+    .why {
+      margin: 10px 0 0;
+      font-size: 0.94rem;
+      line-height: 1.45;
+    }
+
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(8, 22, 16, 0.42);
+      display: none;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 16px;
+      z-index: 999;
+    }
+
+    .modal-overlay.open {
+      display: flex;
+    }
+
+    .modal {
+      width: min(100%, 560px);
+      background: var(--surface);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      box-shadow: 0 24px 40px rgba(0, 0, 0, 0.14);
+      padding: 18px;
+    }
+
+    .modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .modal-title {
+      margin: 0;
+      font-size: 1.2rem;
+    }
+
+    .close-btn {
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--muted);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .step-label {
+      font-size: 0.88rem;
+      color: var(--muted);
+      margin: 0 0 6px;
+    }
+
+    .step-text {
+      margin: 0 0 16px;
+      font-size: 1rem;
+      line-height: 1.55;
+    }
+
+    @media (min-width: 640px) {
+      .app {
+        padding: 30px 20px 36px;
+      }
+
+      .results {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .card:first-child {
+        grid-column: 1 / -1;
+      }
+
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1 class="title">Food Decision</h1>
+    <p class="subtitle">Pick your time, mood, and diet. We will suggest the best 3 dishes.</p>
+
+    <section class="panel">
+      <p class="section-label">1. Time</p>
+      <div class="choices" id="timeChoices">
+        <button class="choice-btn selected" data-group="time" data-value="15">15 min</button>
+        <button class="choice-btn" data-group="time" data-value="30">30 min</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <p class="section-label">2. Mood</p>
+      <div class="choices" id="moodChoices">
+        <button class="choice-btn selected" data-group="mood" data-value="quick">quick</button>
+        <button class="choice-btn" data-group="mood" data-value="healthy">healthy</button>
+        <button class="choice-btn" data-group="mood" data-value="comfort">comfort</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <p class="section-label">3. Diet</p>
+      <div class="choices" id="dietChoices">
+        <button class="choice-btn selected" data-group="diet" data-value="veg">veg</button>
+        <button class="choice-btn" data-group="diet" data-value="non-veg">non-veg</button>
+      </div>
+    </section>
+
+    <section class="actions">
+      <button class="action" id="suggestBtn">Get Suggestion</button>
+      <button class="action secondary" id="decideBtn">Decide For Me</button>
+    </section>
+    <p class="status" id="statusText"></p>
+    <p class="ready-text" id="readyText">Your quick meal is ready</p>
+    <p class="tap-hint" id="tapHint">Tap a dish to start cooking</p>
+
+    <section class="results" id="results"></section>
+  </main>
+
+  <div class="modal-overlay" id="recipeModal">
+    <section class="modal">
+      <div class="modal-head">
+        <h2 class="modal-title" id="modalDishName">Recipe</h2>
+        <button class="close-btn" id="closeModalBtn">Close</button>
+      </div>
+      <p class="step-label" id="stepCountLabel">Step 1</p>
+      <p class="step-text" id="stepText">Loading...</p>
+      <button class="action" id="nextStepBtn">Next Step</button>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      time_available: 15,
+      mood: "quick",
+      diet: "veg"
+    };
+
+    const statusText = document.getElementById("statusText");
+    const readyText = document.getElementById("readyText");
+    const tapHint = document.getElementById("tapHint");
+    const resultsContainer = document.getElementById("results");
+    const suggestBtn = document.getElementById("suggestBtn");
+    const decideBtn = document.getElementById("decideBtn");
+    const recipeModal = document.getElementById("recipeModal");
+    const modalDishName = document.getElementById("modalDishName");
+    const stepCountLabel = document.getElementById("stepCountLabel");
+    const stepText = document.getElementById("stepText");
+    const nextStepBtn = document.getElementById("nextStepBtn");
+    const closeModalBtn = document.getElementById("closeModalBtn");
+
+    let modalSteps = [];
+    let currentStepIndex = 0;
+    const LAST_MODE_KEY = "foodai_last_mode";
+
+    function toRecipeCode(recipeId) {
+      const numericId = Number(recipeId);
+      if (Number.isNaN(numericId)) {
+        return String(recipeId);
+      }
+      return `r${String(numericId).padStart(3, "0")}`;
+    }
+
+    async function trackInteraction(action, recipeId) {
+      try {
+        await fetch("/track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action,
+            recipe_id: toRecipeCode(recipeId)
+          })
+        });
+      } catch (error) {
+        // Tracking should never block the main user flow.
+      }
+    }
+
+    function setSelected(group, value) {
+      document.querySelectorAll(`[data-group="${group}"]`).forEach((btn) => {
+        btn.classList.toggle("selected", btn.dataset.value === value);
+      });
+    }
+
+    function bindChoiceButtons() {
+      document.querySelectorAll(".choice-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const { group, value } = btn.dataset;
+          if (group === "time") {
+            state.time_available = Number(value);
+          } else if (group === "mood") {
+            state.mood = value;
+          } else if (group === "diet") {
+            state.diet = value;
+          }
+          setSelected(group, value);
+        });
+      });
+    }
+
+    function getInitialMode() {
+      const savedMode = localStorage.getItem(LAST_MODE_KEY);
+      return savedMode === "decide" ? "decide" : "normal";
+    }
+
+    function renderResults(items, mode) {
+      resultsContainer.innerHTML = "";
+      const visibleItems = mode === "decide" ? items.slice(0, 1) : items;
+      tapHint.style.display = "none";
+
+      if (visibleItems.length === 0) {
+        statusText.textContent = "No matching dishes found. Try different options.";
+        return;
+      }
+
+      visibleItems.forEach((item, index) => {
+        const card = document.createElement("article");
+        card.className = "card";
+        if (mode === "decide" && index === 0) {
+          card.classList.add("highlighted");
+          card.classList.add("best-choice");
+        }
+        card.innerHTML = `
+          ${mode === "decide" ? '<p class="best-badge">&#11088; Best Choice</p>' : ""}
+          <h3>${item.name}</h3>
+          <p class="meta">Time: ${item.time_minutes} min</p>
+          <p class="meta">Tags: ${item.tags}</p>
+          <p class="meta">Score: ${item.score}</p>
+          <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
+        `;
+        card.addEventListener("click", () => {
+          trackInteraction("cook", item.id);
+          openRecipeModal(item.id);
+        });
+        resultsContainer.appendChild(card);
+        trackInteraction("view", item.id);
+      });
+      tapHint.style.display = "block";
+    }
+
+    function updateModalStep() {
+      const stepNo = currentStepIndex + 1;
+      const total = modalSteps.length;
+      stepCountLabel.textContent = `Step ${stepNo} of ${total}`;
+      stepText.textContent = modalSteps[currentStepIndex] || "No step found";
+      nextStepBtn.textContent = stepNo >= total ? "Done" : "Next Step";
+    }
+
+    async function openRecipeModal(recipeId) {
+      if (!recipeId) {
+        statusText.textContent = "Could not open recipe details for this card.";
+        return;
+      }
+
+      try {
+        const response = await fetch(`/recipe/${recipeId}`);
+        if (!response.ok) {
+          throw new Error("Recipe request failed");
+        }
+
+        const recipe = await response.json();
+        modalDishName.textContent = recipe.name;
+        modalSteps = Array.isArray(recipe.steps) ? recipe.steps : [];
+        currentStepIndex = 0;
+        updateModalStep();
+        recipeModal.classList.add("open");
+      } catch (error) {
+        statusText.textContent = "Could not load cooking steps right now.";
+      }
+    }
+
+    function closeRecipeModal() {
+      recipeModal.classList.remove("open");
+    }
+
+    async function getSuggestions(mode = "normal") {
+      suggestBtn.disabled = true;
+      decideBtn.disabled = true;
+      statusText.textContent = "Thinking...";
+      readyText.textContent = mode === "decide" ? "Dinner decided for you" : "Your quick meal is ready";
+
+      try {
+        const endpoint = mode === "decide"
+          ? "http://127.0.0.1:8000/recommend"
+          : "/recommend";
+
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...state,
+            mode
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error("Request failed");
+        }
+
+        const data = await response.json();
+        renderResults(data, mode);
+        localStorage.setItem(LAST_MODE_KEY, mode);
+        if (mode === "decide" && data.length > 0) {
+          trackInteraction("decide", data[0].id);
+        }
+        statusText.textContent = mode === "decide" ? "One final pick is ready." : "Top 3 suggestions ready.";
+      } catch (error) {
+        statusText.textContent = "Could not fetch suggestions. Make sure API server is running.";
+      } finally {
+        suggestBtn.disabled = false;
+        decideBtn.disabled = false;
+      }
+    }
+
+    suggestBtn.addEventListener("click", () => getSuggestions("normal"));
+    decideBtn.addEventListener("click", () => getSuggestions("decide"));
+    nextStepBtn.addEventListener("click", () => {
+      if (currentStepIndex < modalSteps.length - 1) {
+        currentStepIndex += 1;
+        updateModalStep();
+        return;
+      }
+      closeRecipeModal();
+    });
+    closeModalBtn.addEventListener("click", closeRecipeModal);
+    recipeModal.addEventListener("click", (event) => {
+      if (event.target === recipeModal) {
+        closeRecipeModal();
+      }
+    });
+    bindChoiceButtons();
+    getSuggestions(getInitialMode());
+  </script>
+</body>
+</html>
