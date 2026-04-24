@@ -58,6 +58,23 @@ def to_recipe_code(recipe_id: int) -> str:
     return f"r{recipe_id:03d}"
 
 
+def build_reason(tags: list[str], time_minutes: int, time_available: int) -> str:
+    parts = []
+
+    if "quick" in tags:
+        parts.append("⚡ Quick to prepare.")
+    if "healthy" in tags:
+        parts.append("🥗 Healthy choice.")
+    if "comfort" in tags:
+        parts.append("🍲 Comfort food.")
+
+    if time_minutes <= time_available:
+        parts.append(f"Ready in under {time_available} mins.")
+
+    reason = " ".join(parts).strip()
+    return reason if reason else "A good match for your preferences."
+
+
 CSV_PATH = Path(__file__).resolve().parent / "recipes.csv"
 INDEX_PATH = Path(__file__).resolve().parent / "index.html"
 interactions = []
@@ -183,6 +200,11 @@ def recommend(payload: RecommendRequest, request: Request):
     random.shuffle(selected)
 
     for item in selected:
+        item["reason"] = build_reason(
+            tags=item.get("_tags", []),
+            time_minutes=int(item["time_minutes"]),
+            time_available=int(payload.time_available),
+        )
         item.pop("_tags", None)
 
     return selected
