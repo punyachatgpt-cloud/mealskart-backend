@@ -17,6 +17,7 @@ class RecommendRequest(BaseModel):
     mood: Literal["quick", "healthy", "comfort"]
     diet: Literal["veg", "non-veg"]
     mode: Literal["normal", "decide"] = "normal"
+    ingredients: list[str] | None = None
 
 
 class TrackRequest(BaseModel):
@@ -33,6 +34,12 @@ def load_recipes(csv_path: Path):
             row = {str(k).lstrip("\ufeff").strip(): v for k, v in row.items()}
             row["time_minutes"] = int(row["time_minutes"])
             row["tags"] = [tag.strip() for tag in row["tags"].split(",") if tag.strip()]
+            ingredients_raw = row.get("ingredients", "") or ""
+            row["ingredients_list"] = [
+                ingredient.strip().lower()
+                for ingredient in str(ingredients_raw).split(",")
+                if ingredient.strip()
+            ]
             recipes.append(row)
     return recipes
 
@@ -139,6 +146,30 @@ def recommend(payload: RecommendRequest, request: Request):
     if time_filtered_recipes:
         filtered_recipes = time_filtered_recipes
 
+    # Optional ingredient-based filtering (>= 50% of recipe ingredients match).
+    normalized_user_ingredients = None
+    if payload.ingredients:
+        normalized_user_ingredients = {
+            str(i).strip().lower() for i in payload.ingredients if str(i).strip()
+        }
+
+    ingredient_match_ids: set[int] = set()
+    if normalized_user_ingredients:
+        ingredient_filtered = []
+        for r in filtered_recipes:
+            recipe_ingredients = set(r.get("ingredients_list", []))
+            if not recipe_ingredients:
+                continue
+            matching = len(recipe_ingredients & normalized_user_ingredients)
+            match_score = matching / len(recipe_ingredients)
+            if match_score >= 0.5:
+                ingredient_filtered.append(r)
+                ingredient_match_ids.add(int(r["id"]))
+
+        # Fallback: if no ingredient matches, continue with normal filtered set.
+        if ingredient_filtered:
+            filtered_recipes = ingredient_filtered
+
     for recipe in filtered_recipes:
         score, reasons = score_recipe(
             recipe=recipe,
@@ -153,6 +184,10 @@ def recommend(payload: RecommendRequest, request: Request):
             preference_bonus += min(user_preferences.get(tag, 0), 10) * 0.5
         preference_bonus += min(user_preferences.get(recipe.get("diet", ""), 0), 10) * 0.5
         score += preference_bonus
+
+        # Ingredient match boost (only when ingredient filtering is active).
+        if normalized_user_ingredients and int(recipe["id"]) in ingredient_match_ids:
+            score += 2
         cook_count = cook_counts.get(to_recipe_code(int(recipe["id"])), 0)
         if cook_count > 0:
             score -= cook_count * 0.5
