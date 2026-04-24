@@ -29,6 +29,8 @@ def load_recipes(csv_path: Path):
     with csv_path.open(newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
         for row in reader:
+            # Normalize header keys (handles UTF-8 BOM in the first column name).
+            row = {str(k).lstrip("\ufeff").strip(): v for k, v in row.items()}
             row["time_minutes"] = int(row["time_minutes"])
             row["tags"] = [tag.strip() for tag in row["tags"].split(",") if tag.strip()]
             recipes.append(row)
@@ -132,6 +134,11 @@ def recommend(payload: RecommendRequest, request: Request):
     if not filtered_recipes:
         return []
 
+    # Prefer respecting the user's time limit; if too strict, fall back to diet-only.
+    time_filtered_recipes = [r for r in filtered_recipes if int(r["time_minutes"]) <= payload.time_available]
+    if time_filtered_recipes:
+        filtered_recipes = time_filtered_recipes
+
     for recipe in filtered_recipes:
         score, reasons = score_recipe(
             recipe=recipe,
@@ -170,50 +177,83 @@ def recommend(payload: RecommendRequest, request: Request):
     if not candidates:
         candidates = ranked[:]
 
-    def pick_diverse(items, count):
+    limit = 1 if payload.mode == "decide" else 3
+
+    # Exploration vs exploitation:
+    # - Take top 5 candidates by score
+    # - Pick 2 best (exploit)
+    # - Pick 1 random from the remaining 3 (explore)
+    sorted_recipes = sorted(candidates, key=lambda x: x["score"], reverse=True)
+    top_candidates = sorted_recipes[:5]
+
+    def select_explore_exploit(items, count):
+        if not items:
+            return []
+
         selected = []
         selected_ids = set()
-        covered = set()
-        categories = ["quick", "healthy", "comfort"]
+        covered_categories = set()
+        categories = {"quick", "healthy", "comfort"}
 
-        for category in categories:
-            best = None
-            for item in items:
-                if item["id"] in selected_ids:
-                    continue
-                if category not in item.get("_tags", []):
-                    continue
-                # Prefer adding a new category, then higher score.
-                if best is None or item["score"] > best["score"]:
-                    best = item
-            if best is not None and len(selected) < count:
-                selected.append(best)
-                selected_ids.add(best["id"])
-                covered.update(best.get("_tags", []))
-
-        # Fill remaining slots with best-scoring items (still unique).
-        for item in items:
-            if len(selected) >= count:
-                break
-            if item["id"] in selected_ids:
-                continue
+        def add_item(item):
             selected.append(item)
             selected_ids.add(item["id"])
+            covered_categories.update(set(item.get("_tags", [])) & categories)
 
-        # If still short, randomly fill from the full ranked list (unique only).
+        # Exploit: first pick is the best.
+        add_item(items[0])
+
+        # Exploit: second pick prefers adding a new category if possible.
+        if count >= 2:
+            second = None
+            for item in items[1:]:
+                if item["id"] in selected_ids:
+                    continue
+                item_categories = set(item.get("_tags", [])) & categories
+                if item_categories and not item_categories.issubset(covered_categories):
+                    second = item
+                    break
+            if second is None:
+                for item in items[1:]:
+                    if item["id"] not in selected_ids:
+                        second = item
+                        break
+            if second is not None:
+                add_item(second)
+
+        # Explore: pick one random from the remaining top candidates, preferring new categories.
+        if count >= 3:
+            remaining = [i for i in items[2:] if i["id"] not in selected_ids]
+            if remaining:
+                diverse = []
+                for item in remaining:
+                    item_categories = set(item.get("_tags", [])) & categories
+                    if item_categories and not item_categories.issubset(covered_categories):
+                        diverse.append(item)
+                pool = diverse if diverse else remaining
+                add_item(random.choice(pool))
+
+        # Fill to count with best-scoring unique items.
+        if len(selected) < count:
+            for item in sorted_recipes:
+                if len(selected) >= count:
+                    break
+                if item["id"] in selected_ids:
+                    continue
+                add_item(item)
+
+        # Final fallback: fill from the full ranked list (even if recently suggested) to guarantee count.
         if len(selected) < count:
             pool = [r for r in ranked if r["id"] not in selected_ids]
             random.shuffle(pool)
             for item in pool:
                 if len(selected) >= count:
                     break
-                selected.append(item)
-                selected_ids.add(item["id"])
+                add_item(item)
 
-        return selected
+        return selected[:count]
 
-    limit = 1 if payload.mode == "decide" else 3
-    selected = pick_diverse(candidates, limit)
+    selected = select_explore_exploit(top_candidates, limit) if limit == 3 else select_explore_exploit(top_candidates, 1)
 
     # Maintain last 5 suggestion ids to avoid repetition.
     recent_suggestions.extend([r["id"] for r in selected])
