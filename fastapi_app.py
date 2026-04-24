@@ -58,6 +58,15 @@ def to_recipe_code(recipe_id: int) -> str:
     return f"r{recipe_id:03d}"
 
 
+def parse_tracked_recipe_id(recipe_id: str) -> int | None:
+    rid = (recipe_id or "").strip().lower()
+    if rid.startswith("r") and rid[1:].isdigit():
+        return int(rid[1:])
+    if rid.isdigit():
+        return int(rid)
+    return None
+
+
 def build_reason(tags: list[str], time_minutes: int, time_available: int) -> str:
     parts = []
 
@@ -79,6 +88,13 @@ CSV_PATH = Path(__file__).resolve().parent / "recipes.csv"
 INDEX_PATH = Path(__file__).resolve().parent / "index.html"
 interactions = []
 recent_suggestions = []
+user_preferences = {
+    "quick": 0,
+    "healthy": 0,
+    "comfort": 0,
+    "veg": 0,
+    "non-veg": 0,
+}
 
 
 @app.on_event("startup")
@@ -123,6 +139,13 @@ def recommend(payload: RecommendRequest, request: Request):
             mood=payload.mood,
         )
         score += random.uniform(0, 1)
+
+        # Small personalization bonus based on learned preferences.
+        preference_bonus = 0.0
+        for tag in recipe.get("tags", []):
+            preference_bonus += min(user_preferences.get(tag, 0), 10) * 0.5
+        preference_bonus += min(user_preferences.get(recipe.get("diet", ""), 0), 10) * 0.5
+        score += preference_bonus
         cook_count = cook_counts.get(to_recipe_code(int(recipe["id"])), 0)
         if cook_count > 0:
             score -= cook_count * 0.5
@@ -225,7 +248,21 @@ def get_recipe(id: int, request: Request):
 
 
 @app.post("/track")
-def track_interaction(payload: TrackRequest):
+def track_interaction(payload: TrackRequest, request: Request):
+    if payload.action == "cook":
+        tracked_id = parse_tracked_recipe_id(payload.recipe_id)
+        if tracked_id is not None:
+            recipes = get_loaded_recipes(request)
+            recipe = next((r for r in recipes if int(r["id"]) == tracked_id), None)
+            if recipe is not None:
+                for tag in recipe.get("tags", []):
+                    if tag in user_preferences:
+                        user_preferences[tag] += 1
+                diet = (recipe.get("diet") or "").strip().lower()
+                if diet in user_preferences:
+                    user_preferences[diet] += 1
+
+    print("Preferences:", user_preferences)
     interaction = {
         "action": payload.action,
         "recipe_id": payload.recipe_id,
