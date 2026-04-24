@@ -332,6 +332,15 @@
   </div>
 
   <script>
+    const API_BASE_URL = "https://mealskart-backend.onrender.com";
+
+    function apiUrl(path) {
+      if (!path.startsWith("/")) {
+        throw new Error("API path must start with '/'");
+      }
+      return `${API_BASE_URL}${path}`;
+    }
+
     const state = {
       time_available: 15,
       mood: "quick",
@@ -365,7 +374,7 @@
 
     async function trackInteraction(action, recipeId) {
       try {
-        await fetch("/track", {
+        const response = await fetch(apiUrl("/track"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -373,6 +382,10 @@
             recipe_id: toRecipeCode(recipeId)
           })
         });
+
+        if (!response.ok) {
+          throw new Error("Track request failed");
+        }
       } catch (error) {
         // Tracking should never block the main user flow.
       }
@@ -455,7 +468,10 @@
       }
 
       try {
-        const response = await fetch(`/recipe/${recipeId}`);
+        const response = await fetch(apiUrl(`/recipe/${recipeId}`), {
+          method: "GET",
+          headers: { "Accept": "application/json" }
+        });
         if (!response.ok) {
           throw new Error("Recipe request failed");
         }
@@ -482,11 +498,7 @@
       readyText.textContent = mode === "decide" ? "Dinner decided for you" : "Your quick meal is ready";
 
       try {
-        const endpoint = mode === "decide"
-          ? "http://127.0.0.1:8000/recommend"
-          : "/recommend";
-
-        const response = await fetch(endpoint, {
+        const response = await fetch(apiUrl("/recommend"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
