@@ -1,4 +1,5 @@
 import csv
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -60,6 +61,7 @@ def to_recipe_code(recipe_id: int) -> str:
 CSV_PATH = Path(__file__).resolve().parent / "recipes.csv"
 INDEX_PATH = Path(__file__).resolve().parent / "index.html"
 interactions = []
+recent_suggestions = []
 
 
 @app.on_event("startup")
@@ -103,6 +105,7 @@ def recommend(payload: RecommendRequest, request: Request):
             time_available=payload.time_available,
             mood=payload.mood,
         )
+        score += random.uniform(0, 1)
         cook_count = cook_counts.get(to_recipe_code(int(recipe["id"])), 0)
         if cook_count > 0:
             score -= cook_count * 0.5
@@ -114,14 +117,75 @@ def recommend(payload: RecommendRequest, request: Request):
                 "name": recipe["name"],
                 "time_minutes": recipe["time_minutes"],
                 "tags": ", ".join(recipe["tags"]),
+                "_tags": recipe["tags"],
                 "score": score,
                 "why": "; ".join(reasons) if reasons else "best available option",
             }
         )
 
     ranked.sort(key=lambda item: (-item["score"], item["time_minutes"], item["name"]))
+
+    global recent_suggestions
+    candidates = [r for r in ranked if r["id"] not in recent_suggestions]
+    if not candidates:
+        candidates = ranked[:]
+
+    def pick_diverse(items, count):
+        selected = []
+        selected_ids = set()
+        covered = set()
+        categories = ["quick", "healthy", "comfort"]
+
+        for category in categories:
+            best = None
+            for item in items:
+                if item["id"] in selected_ids:
+                    continue
+                if category not in item.get("_tags", []):
+                    continue
+                # Prefer adding a new category, then higher score.
+                if best is None or item["score"] > best["score"]:
+                    best = item
+            if best is not None and len(selected) < count:
+                selected.append(best)
+                selected_ids.add(best["id"])
+                covered.update(best.get("_tags", []))
+
+        # Fill remaining slots with best-scoring items (still unique).
+        for item in items:
+            if len(selected) >= count:
+                break
+            if item["id"] in selected_ids:
+                continue
+            selected.append(item)
+            selected_ids.add(item["id"])
+
+        # If still short, randomly fill from the full ranked list (unique only).
+        if len(selected) < count:
+            pool = [r for r in ranked if r["id"] not in selected_ids]
+            random.shuffle(pool)
+            for item in pool:
+                if len(selected) >= count:
+                    break
+                selected.append(item)
+                selected_ids.add(item["id"])
+
+        return selected
+
     limit = 1 if payload.mode == "decide" else 3
-    return ranked[:limit]
+    selected = pick_diverse(candidates, limit)
+
+    # Maintain last 5 suggestion ids to avoid repetition.
+    recent_suggestions.extend([r["id"] for r in selected])
+    recent_suggestions = recent_suggestions[-5:]
+
+    # Shuffle before returning to reduce over-prioritizing a single item.
+    random.shuffle(selected)
+
+    for item in selected:
+        item.pop("_tags", None)
+
+    return selected
 
 
 @app.get("/recipe/{id}")
