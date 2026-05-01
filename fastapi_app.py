@@ -18,6 +18,7 @@ class RecommendRequest(BaseModel):
     diet: Literal["veg", "non-veg"]
     mode: Literal["normal", "decide"] = "normal"
     ingredients: list[str] | None = None
+    category: str | None = None
 
 
 class TrackRequest(BaseModel):
@@ -31,7 +32,7 @@ def load_recipes(csv_path: Path):
         reader = csv.DictReader(file)
         for row in reader:
             # Normalize header keys (handles UTF-8 BOM in the first column name).
-            row = {str(k).lstrip("\ufeff").strip(): v for k, v in row.items()}
+            row = {str(k).lstrip("\ufeff").strip().strip('"'): v for k, v in row.items()}
             row["time_minutes"] = int(row["time_minutes"])
             row["tags"] = [tag.strip() for tag in row["tags"].split(",") if tag.strip()]
             ingredients_raw = row.get("ingredients", "") or ""
@@ -40,6 +41,7 @@ def load_recipes(csv_path: Path):
                 for ingredient in str(ingredients_raw).split(",")
                 if ingredient.strip()
             ]
+            row["category"] = (row.get("category") or "other").strip().lower()
             recipes.append(row)
     return recipes
 
@@ -61,6 +63,13 @@ def score_recipe(recipe, time_available: int, mood: str):
         reasons.append("extra quick bonus for short time")
 
     return score, reasons
+
+
+def normalize_category(category: str | None) -> str | None:
+    if not category:
+        return None
+    normalized = category.strip().lower().replace("_", "-")
+    return None if normalized in {"", "all", "any"} else normalized
 
 
 def to_recipe_code(recipe_id: int) -> str:
@@ -125,6 +134,7 @@ def recommend(payload: RecommendRequest, request: Request):
     ranked = []
     recipes = get_loaded_recipes(request)
     diet = payload.diet
+    category = normalize_category(payload.category)
 
     cook_counts = {}
     for event in interactions:
@@ -145,6 +155,15 @@ def recommend(payload: RecommendRequest, request: Request):
     time_filtered_recipes = [r for r in filtered_recipes if int(r["time_minutes"]) <= payload.time_available]
     if time_filtered_recipes:
         filtered_recipes = time_filtered_recipes
+
+    # Category guides intent, but falls back gracefully when too narrow.
+    if category:
+        category_filtered_recipes = [
+            r for r in filtered_recipes
+            if (r.get("category") or "").strip().lower() == category
+        ]
+        if category_filtered_recipes:
+            filtered_recipes = category_filtered_recipes
 
     # Optional ingredient-based filtering (>= 50% of recipe ingredients match).
     normalized_user_ingredients = None
@@ -188,6 +207,9 @@ def recommend(payload: RecommendRequest, request: Request):
         # Ingredient match boost (only when ingredient filtering is active).
         if normalized_user_ingredients and int(recipe["id"]) in ingredient_match_ids:
             score += 2
+        if category and (recipe.get("category") or "").strip().lower() == category:
+            score += 1.5
+            reasons.append(f"matches {category.replace('-', ' ')} preference")
         cook_count = cook_counts.get(to_recipe_code(int(recipe["id"])), 0)
         if cook_count > 0:
             score -= cook_count * 0.5
@@ -199,6 +221,7 @@ def recommend(payload: RecommendRequest, request: Request):
                 "name": recipe["name"],
                 "time_minutes": recipe["time_minutes"],
                 "tags": ", ".join(recipe["tags"]),
+                "category": recipe.get("category", "other"),
                 "_tags": recipe["tags"],
                 "score": score,
                 "why": "; ".join(reasons) if reasons else "best available option",
