@@ -26,6 +26,15 @@ class TrackRequest(BaseModel):
     recipe_id: str
 
 
+class MealPlanRequest(BaseModel):
+    days: int = 7
+    meals_per_day: int = 2
+    time_available: int = 30
+    diet: Literal["veg", "non-veg"]
+    mood: Literal["quick", "healthy", "comfort"] | None = None
+    category: str | None = None
+
+
 def load_recipes(csv_path: Path):
     recipes = []
     with csv_path.open(newline="", encoding="utf-8") as file:
@@ -34,6 +43,8 @@ def load_recipes(csv_path: Path):
             # Normalize header keys (handles UTF-8 BOM in the first column name).
             row = {str(k).lstrip("\ufeff").strip().strip('"'): v for k, v in row.items()}
             row["time_minutes"] = int(row["time_minutes"])
+            row["calories"] = int(row.get("calories") or 0)
+            row["difficulty"] = (row.get("difficulty") or "easy").strip().lower()
             row["tags"] = [tag.strip() for tag in row["tags"].split(",") if tag.strip()]
             ingredients_raw = row.get("ingredients", "") or ""
             row["ingredients_list"] = [
@@ -102,6 +113,27 @@ def build_reason(tags: list[str], time_minutes: int, time_available: int) -> str
     return reason if reason else "A good match for your preferences."
 
 
+def ingredient_match_percent(recipe_ingredients: list[str], user_ingredients: set[str] | None) -> int:
+    if not recipe_ingredients or not user_ingredients:
+        return 0
+    matching = len(set(recipe_ingredients) & user_ingredients)
+    return round((matching / len(recipe_ingredients)) * 100)
+
+
+def recipe_summary(recipe) -> dict:
+    return {
+        "id": int(recipe["id"]),
+        "name": recipe["name"],
+        "time_minutes": recipe["time_minutes"],
+        "calories": recipe["calories"],
+        "difficulty": recipe["difficulty"],
+        "diet": recipe["diet"],
+        "tags": recipe["tags"],
+        "category": recipe.get("category", "other"),
+        "ingredients_preview": recipe.get("ingredients_list", [])[:5],
+    }
+
+
 CSV_PATH = Path(__file__).resolve().parent / "recipes.csv"
 INDEX_PATH = Path(__file__).resolve().parent / "index.html"
 interactions = []
@@ -146,7 +178,6 @@ def recommend(payload: RecommendRequest, request: Request):
         r for r in recipes
         if r["diet"].strip().lower() == diet.strip().lower()
     ]
-    print("FILTERED COUNT:", len(filtered_recipes))
 
     if not filtered_recipes:
         return []
@@ -220,6 +251,13 @@ def recommend(payload: RecommendRequest, request: Request):
                 "id": int(recipe["id"]),
                 "name": recipe["name"],
                 "time_minutes": recipe["time_minutes"],
+                "calories": recipe["calories"],
+                "difficulty": recipe["difficulty"],
+                "ingredients_preview": recipe.get("ingredients_list", [])[:5],
+                "ingredient_match_percent": ingredient_match_percent(
+                    recipe.get("ingredients_list", []),
+                    normalized_user_ingredients,
+                ),
                 "tags": ", ".join(recipe["tags"]),
                 "category": recipe.get("category", "other"),
                 "_tags": recipe["tags"],
@@ -340,8 +378,87 @@ def get_recipe(id: int, request: Request):
 
     steps = [step.strip() for step in recipe["steps"].split(";") if step.strip()]
     return {
+        "id": int(recipe["id"]),
         "name": recipe["name"],
+        "ingredients": recipe.get("ingredients_list", []),
+        "time_minutes": recipe["time_minutes"],
+        "calories": recipe["calories"],
+        "difficulty": recipe["difficulty"],
+        "diet": recipe["diet"],
+        "tags": recipe["tags"],
+        "category": recipe.get("category", "other"),
         "steps": steps,
+    }
+
+
+@app.post("/meal-plan")
+def meal_plan(payload: MealPlanRequest, request: Request):
+    recipes = get_loaded_recipes(request)
+    days_count = max(1, min(int(payload.days), 7))
+    meals_per_day = max(1, min(int(payload.meals_per_day), 3))
+    category = normalize_category(payload.category)
+
+    candidates = [
+        r for r in recipes
+        if r["diet"].strip().lower() == payload.diet.strip().lower()
+        and int(r["time_minutes"]) <= int(payload.time_available)
+    ]
+
+    if category:
+        category_matches = [
+            r for r in candidates
+            if (r.get("category") or "").strip().lower() == category
+        ]
+        if category_matches:
+            candidates = category_matches
+
+    if payload.mood:
+        candidates.sort(
+            key=lambda r: (
+                payload.mood not in r.get("tags", []),
+                int(r["time_minutes"]),
+                r["name"],
+            )
+        )
+    else:
+        candidates.sort(key=lambda r: (int(r["time_minutes"]), r["name"]))
+
+    if not candidates:
+        return {"days": [], "grocery_list": [], "total_calories": 0}
+
+    needed = days_count * meals_per_day
+    selected = candidates[:needed]
+    grocery_counts = {}
+    total_calories = 0
+    days = []
+
+    for day_index in range(days_count):
+        start = day_index * meals_per_day
+        day_recipes = selected[start:start + meals_per_day]
+        if not day_recipes:
+            break
+
+        for recipe in day_recipes:
+            total_calories += int(recipe["calories"])
+            for ingredient in recipe.get("ingredients_list", []):
+                grocery_counts[ingredient] = grocery_counts.get(ingredient, 0) + 1
+
+        days.append(
+            {
+                "day": day_index + 1,
+                "recipes": [recipe_summary(recipe) for recipe in day_recipes],
+            }
+        )
+
+    grocery_list = [
+        {"name": name, "used_in": count}
+        for name, count in sorted(grocery_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    return {
+        "days": days,
+        "grocery_list": grocery_list,
+        "total_calories": total_calories,
     }
 
 
@@ -360,7 +477,6 @@ def track_interaction(payload: TrackRequest, request: Request):
                 if diet in user_preferences:
                     user_preferences[diet] += 1
 
-    print("Preferences:", user_preferences)
     interaction = {
         "action": payload.action,
         "recipe_id": payload.recipe_id,
