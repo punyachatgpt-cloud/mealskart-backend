@@ -93,6 +93,13 @@
       color: #0f4c31;
     }
 
+    .choice-btn:focus-visible,
+    .action:focus-visible,
+    .card:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .action {
       width: 100%;
       border: none;
@@ -312,7 +319,7 @@
       <button class="action" id="suggestBtn">Get Suggestion</button>
       <button class="action secondary" id="decideBtn">Decide For Me</button>
     </section>
-    <p class="status" id="statusText"></p>
+    <p class="status" id="statusText" aria-live="polite"></p>
     <p class="ready-text" id="readyText">Your quick meal is ready</p>
     <p class="tap-hint" id="tapHint">Tap a dish to start cooking</p>
 
@@ -320,7 +327,7 @@
   </main>
 
   <div class="modal-overlay" id="recipeModal">
-    <section class="modal">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalDishName">
       <div class="modal-head">
         <h2 class="modal-title" id="modalDishName">Recipe</h2>
         <button class="close-btn" id="closeModalBtn">Close</button>
@@ -443,9 +450,18 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", `View recipe for ${item.name}`);
         card.addEventListener("click", () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        });
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            card.click();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
