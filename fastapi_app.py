@@ -215,15 +215,32 @@ def ingredient_match_percent(recipe_ingredients: list[str], user_ingredients: se
 
 
 def _name_query_matches(recipe: dict, query: str) -> bool:
-    """True if the recipe name or any ingredient contains the query term."""
+    """
+    True if the recipe name or ingredients satisfy the query.
+
+    Strategy (in order of decreasing strictness):
+    1. Exact phrase  — "butter chicken" in "Butter Chicken (Murgh Makhani)"  ✓
+    2. All words     — every word in query appears somewhere in name+ingredients
+                       "butter" AND "chicken" both found                       ✓
+    3. Any word      — fallback for single-word queries (already exact above)
+    """
     q = query.strip().lower()
     if not q:
         return True
+
     name_lower = recipe["name"].lower()
-    if q in name_lower:
+    all_text   = name_lower + " " + " ".join(recipe.get("ingredients_list", []))
+
+    # 1. Exact phrase match (handles single-word queries too)
+    if q in all_text:
         return True
-    # Check ingredients
-    return any(q in ing for ing in recipe.get("ingredients_list", []))
+
+    # 2. All words present anywhere in name+ingredients (handles "butter chicken")
+    words = q.split()
+    if len(words) > 1 and all(w in all_text for w in words):
+        return True
+
+    return False
 
 
 def get_recipe_enrichment(recipe) -> dict:
@@ -359,16 +376,23 @@ def recommend(payload: RecommendRequest, request: Request):
         if category_filtered_recipes:
             filtered_recipes = category_filtered_recipes
 
-    # Name / key-ingredient query — e.g. "pork", "pasta", "biryani".
+    # Name / key-ingredient query — e.g. "butter chicken", "pasta", "biryani".
     # Applied before the ingredient-tag filter so it works standalone.
     name_query = (payload.name_query or "").strip().lower()
+    name_query_active = bool(name_query)
+    name_query_found  = False
     if name_query:
+        # First try within already-filtered pool (diet + time + category)
         name_filtered = [r for r in filtered_recipes if _name_query_matches(r, name_query)]
-        # Fall back to all diet-matching recipes if the query is too narrow
+        # Broaden: ignore time/category/diet filters — search all recipes
         if not name_filtered:
             name_filtered = [r for r in recipes if _name_query_matches(r, name_query)]
         if name_filtered:
             filtered_recipes = name_filtered
+            name_query_found = True
+        else:
+            # Nothing found anywhere — return empty so the frontend shows "no results"
+            filtered_recipes = []
 
     # Optional ingredient-based filtering (>= 30% of recipe ingredients match via substring).
     normalized_user_ingredients = None
