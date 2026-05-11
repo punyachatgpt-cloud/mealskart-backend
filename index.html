@@ -276,6 +276,13 @@
       }
 
     }
+
+    .choice-btn:focus-visible,
+    .action:focus-visible,
+    .card:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
   </style>
 </head>
 <body>
@@ -431,6 +438,10 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("aria-label", `View recipe for ${item.name}`);
+
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,9 +454,16 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const handleAction = () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        };
+        card.addEventListener("click", handleAction);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleAction();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
