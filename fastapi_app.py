@@ -380,10 +380,11 @@ def recommend(payload: RecommendRequest, request: Request):
     ingredient_match_ids: set[int] = set()
     if normalized_user_ingredients:
         ingredient_filtered = []
-        # Threshold: 30% for multi-ingredient searches, but for a single ingredient
-        # we require at least 1 substring match (allows "pork" to match "pork chops").
         single_ing_mode = len(normalized_user_ingredients) <= 2
+        # For multi-ingredient pantry searches use 30% threshold.
+        # For single/double ingredient searches use 10% so at least 1 match suffices.
         threshold = 0.1 if single_ing_mode else 0.3
+
         for r in filtered_recipes:
             recipe_ingredients = r.get("ingredients_list", [])
             if not recipe_ingredients:
@@ -394,13 +395,38 @@ def recommend(payload: RecommendRequest, request: Request):
                 if any(ui in ri or ri in ui for ui in normalized_user_ingredients)
             )
             match_score = matching / len(recipe_ingredients)
-            if match_score >= threshold:
+
+            # In single-ingredient mode also accept a recipe whose NAME contains
+            # the ingredient — e.g. "Barbecue pork buns" has no 'pork' in its
+            # ingredient list, but the name makes the intent clear.
+            name_hit = single_ing_mode and any(
+                ui in r["name"].lower() for ui in normalized_user_ingredients
+            )
+
+            if match_score >= threshold or name_hit:
                 ingredient_filtered.append(r)
                 ingredient_match_ids.add(int(r["id"]))
 
-        # Fallback: if no ingredient matches, continue with normal filtered set.
         if ingredient_filtered:
             filtered_recipes = ingredient_filtered
+        elif single_ing_mode and normalized_user_ingredients:
+            # Nothing found even with name matching — broaden search across all
+            # diet-matching recipes (ignore time/category) before giving up.
+            broader = [
+                r for r in recipes
+                if r["diet"].strip().lower() == diet.strip().lower()
+                and (
+                    any(
+                        ui in ri or ri in ui
+                        for ri in r.get("ingredients_list", [])
+                        for ui in normalized_user_ingredients
+                    )
+                    or any(ui in r["name"].lower() for ui in normalized_user_ingredients)
+                )
+            ]
+            if broader:
+                filtered_recipes = broader
+                ingredient_match_ids = {int(r["id"]) for r in broader}
 
     for recipe in filtered_recipes:
         enrichment = get_recipe_enrichment(recipe)
