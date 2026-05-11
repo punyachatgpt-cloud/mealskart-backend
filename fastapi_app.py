@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import random
 from datetime import datetime, timezone
@@ -8,8 +9,97 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+import db as _db
+
 
 app = FastAPI(title="Recipe Recommender API")
+
+
+ENRICHED_RECIPES = {
+    1: {
+        "servings": 1,
+        "nutrition": {"protein_g": 7, "carbs_g": 44, "fat_g": 9, "fiber_g": 4},
+        "ingredients_with_quantities": [
+            {"name": "poha", "quantity": 0.75, "unit": "cup"},
+            {"name": "onion", "quantity": 0.25, "unit": "cup"},
+            {"name": "green chili", "quantity": 1, "unit": "piece"},
+            {"name": "peanuts", "quantity": 2, "unit": "tbsp"},
+            {"name": "curry leaves", "quantity": 6, "unit": "leaves"},
+            {"name": "mustard seeds", "quantity": 0.5, "unit": "tsp"},
+            {"name": "turmeric", "quantity": 0.25, "unit": "tsp"},
+            {"name": "lemon", "quantity": 0.5, "unit": "piece"},
+            {"name": "oil", "quantity": 1, "unit": "tsp"},
+        ],
+        "substitutions": {
+            "lemon": ["amchur", "lime"],
+            "peanuts": ["roasted chana", "cashews"],
+            "green chili": ["black pepper", "red chili flakes"],
+        },
+    },
+    2: {
+        "servings": 1,
+        "nutrition": {"protein_g": 11, "carbs_g": 29, "fat_g": 7, "fiber_g": 6},
+        "ingredients_with_quantities": [
+            {"name": "besan", "quantity": 0.5, "unit": "cup"},
+            {"name": "onion", "quantity": 0.25, "unit": "cup"},
+            {"name": "tomato", "quantity": 0.25, "unit": "cup"},
+            {"name": "green chili", "quantity": 1, "unit": "piece"},
+            {"name": "coriander", "quantity": 2, "unit": "tbsp"},
+            {"name": "oil", "quantity": 1, "unit": "tsp"},
+        ],
+        "substitutions": {
+            "besan": ["moong dal batter", "oats flour"],
+            "green chili": ["black pepper", "red chili powder"],
+        },
+    },
+    3: {
+        "servings": 1,
+        "nutrition": {"protein_g": 8, "carbs_g": 38, "fat_g": 7, "fiber_g": 2},
+        "ingredients_with_quantities": [
+            {"name": "cooked rice", "quantity": 1, "unit": "cup"},
+            {"name": "curd", "quantity": 0.5, "unit": "cup"},
+            {"name": "milk", "quantity": 2, "unit": "tbsp"},
+            {"name": "ginger", "quantity": 0.5, "unit": "tsp"},
+            {"name": "mustard seeds", "quantity": 0.5, "unit": "tsp"},
+        ],
+        "substitutions": {
+            "curd": ["Greek yogurt", "plant yogurt"],
+            "cooked rice": ["millet", "brown rice"],
+        },
+    },
+    10: {
+        "servings": 1,
+        "nutrition": {"protein_g": 18, "carbs_g": 12, "fat_g": 19, "fiber_g": 3},
+        "ingredients_with_quantities": [
+            {"name": "paneer", "quantity": 100, "unit": "g"},
+            {"name": "onion", "quantity": 0.25, "unit": "cup"},
+            {"name": "tomato", "quantity": 0.25, "unit": "cup"},
+            {"name": "green chili", "quantity": 1, "unit": "piece"},
+            {"name": "oil", "quantity": 1, "unit": "tsp"},
+        ],
+        "substitutions": {
+            "paneer": ["tofu", "scrambled egg"],
+            "green chili": ["black pepper", "red chili flakes"],
+        },
+    },
+    31: {
+        "servings": 1,
+        "nutrition": {"protein_g": 27, "carbs_g": 9, "fat_g": 8, "fiber_g": 2},
+        "ingredients_with_quantities": [
+            {"name": "tuna", "quantity": 100, "unit": "g"},
+            {"name": "onion", "quantity": 0.25, "unit": "cup"},
+            {"name": "tomato", "quantity": 0.25, "unit": "cup"},
+            {"name": "garlic", "quantity": 1, "unit": "clove"},
+            {"name": "oil", "quantity": 1, "unit": "tsp"},
+        ],
+        "substitutions": {
+            "tuna": ["boiled egg", "chicken breast"],
+            "tomato": ["tomato puree", "curd"],
+        },
+    },
+}
+
+DEFAULT_NUTRITION = {"protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0}
 
 
 class RecommendRequest(BaseModel):
@@ -120,17 +210,39 @@ def ingredient_match_percent(recipe_ingredients: list[str], user_ingredients: se
     return round((matching / len(recipe_ingredients)) * 100)
 
 
+def get_recipe_enrichment(recipe) -> dict:
+    recipe_id = int(recipe["id"])
+    enrichment = ENRICHED_RECIPES.get(recipe_id)
+    if enrichment:
+        return enrichment
+
+    return {
+        "servings": 1,
+        "nutrition": DEFAULT_NUTRITION,
+        "ingredients_with_quantities": [
+            {"name": ingredient, "quantity": None, "unit": ""}
+            for ingredient in recipe.get("ingredients_list", [])
+        ],
+        "substitutions": {},
+    }
+
+
 def recipe_summary(recipe) -> dict:
+    enrichment = get_recipe_enrichment(recipe)
     return {
         "id": int(recipe["id"]),
         "name": recipe["name"],
         "time_minutes": recipe["time_minutes"],
         "calories": recipe["calories"],
+        "servings": enrichment["servings"],
+        "nutrition": enrichment["nutrition"],
         "difficulty": recipe["difficulty"],
         "diet": recipe["diet"],
         "tags": recipe["tags"],
         "category": recipe.get("category", "other"),
+        "image_url": recipe.get("image_url", ""),
         "ingredients_preview": recipe.get("ingredients_list", [])[:5],
+        "ingredients_with_quantities": enrichment["ingredients_with_quantities"][:5],
     }
 
 
@@ -148,8 +260,43 @@ user_preferences = {
 
 
 @app.on_event("startup")
-def load_recipes_on_startup():
-    app.state.recipes = load_recipes(CSV_PATH)
+async def load_recipes_on_startup():
+    """
+    Startup sequence:
+      1. Init SQLite schema (instant).
+      2. Seed CSV data synchronously so the API is ready immediately.
+      3. Load all recipes into app.state.recipes.
+      4. Kick off TheMealDB seeding as a background task — once done,
+         app.state.recipes is refreshed to include the new recipes.
+    Falls back gracefully to CSV-only if TheMealDB is unreachable.
+    """
+    from seed_mealdb import seed_from_csv, seed_from_mealdb
+
+    _db.init_db()
+
+    # Always ensure CSV data is present
+    if _db.count_by_source("csv") == 0:
+        seed_from_csv()
+
+    # Serve requests immediately with whatever is in the DB
+    app.state.recipes = _db.load_all_recipes()
+    print(f"[startup] Loaded {len(app.state.recipes)} recipes from DB.")
+
+    # Enrich with TheMealDB data in the background (non-blocking)
+    async def _bg_mealdb_seed():
+        try:
+            added = await seed_from_mealdb()
+            if added > 0:
+                app.state.recipes = _db.load_all_recipes()
+                print(f"[startup] Refreshed recipe list: {len(app.state.recipes)} total.")
+        except Exception as exc:
+            print(f"[startup] TheMealDB background seed failed (non-fatal): {exc}")
+
+    try:
+        asyncio.create_task(_bg_mealdb_seed())
+    except RuntimeError:
+        # No running event loop (e.g. sync test client) — skip background seed
+        pass
 
 
 def get_loaded_recipes(request: Request):
@@ -221,6 +368,7 @@ def recommend(payload: RecommendRequest, request: Request):
             filtered_recipes = ingredient_filtered
 
     for recipe in filtered_recipes:
+        enrichment = get_recipe_enrichment(recipe)
         score, reasons = score_recipe(
             recipe=recipe,
             time_available=payload.time_available,
@@ -252,8 +400,12 @@ def recommend(payload: RecommendRequest, request: Request):
                 "name": recipe["name"],
                 "time_minutes": recipe["time_minutes"],
                 "calories": recipe["calories"],
+                "servings": enrichment["servings"],
+                "nutrition": enrichment["nutrition"],
                 "difficulty": recipe["difficulty"],
+                "image_url": recipe.get("image_url", ""),
                 "ingredients_preview": recipe.get("ingredients_list", [])[:5],
+                "ingredients_with_quantities": enrichment["ingredients_with_quantities"][:5],
                 "ingredient_match_percent": ingredient_match_percent(
                     recipe.get("ingredients_list", []),
                     normalized_user_ingredients,
@@ -376,17 +528,23 @@ def get_recipe(id: int, request: Request):
     if recipe is None:
         raise HTTPException(status_code=404, detail="Recipe not found")
 
+    enrichment = get_recipe_enrichment(recipe)
     steps = [step.strip() for step in recipe["steps"].split(";") if step.strip()]
     return {
         "id": int(recipe["id"]),
         "name": recipe["name"],
         "ingredients": recipe.get("ingredients_list", []),
+        "ingredients_with_quantities": enrichment["ingredients_with_quantities"],
         "time_minutes": recipe["time_minutes"],
         "calories": recipe["calories"],
+        "servings": enrichment["servings"],
+        "nutrition": enrichment["nutrition"],
+        "substitutions": enrichment["substitutions"],
         "difficulty": recipe["difficulty"],
         "diet": recipe["diet"],
         "tags": recipe["tags"],
         "category": recipe.get("category", "other"),
+        "image_url": recipe.get("image_url", ""),
         "steps": steps,
     }
 

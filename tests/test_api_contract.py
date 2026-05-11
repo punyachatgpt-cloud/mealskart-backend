@@ -52,6 +52,43 @@ class MealsKartApiContractTests(unittest.TestCase):
         self.assertIn("poha", recipe["ingredients"])
         self.assertGreater(len(recipe["steps"]), 0)
 
+    def test_recipe_detail_v2_includes_structured_nutrition_and_substitutions(self):
+        response = self.client.get("/recipe/1")
+
+        self.assertEqual(response.status_code, 200)
+        recipe = response.json()
+
+        self.assertEqual(recipe["servings"], 1)
+        self.assertEqual(recipe["nutrition"]["protein_g"], 7)
+        self.assertEqual(recipe["nutrition"]["carbs_g"], 44)
+        self.assertEqual(recipe["nutrition"]["fat_g"], 9)
+        self.assertEqual(recipe["nutrition"]["fiber_g"], 4)
+        self.assertEqual(recipe["ingredients_with_quantities"][0]["name"], "poha")
+        self.assertEqual(recipe["ingredients_with_quantities"][0]["quantity"], 0.75)
+        self.assertEqual(recipe["ingredients_with_quantities"][0]["unit"], "cup")
+        self.assertIn("lemon", recipe["substitutions"])
+        self.assertIn("amchur", recipe["substitutions"]["lemon"])
+
+    def test_recommendations_include_macro_preview_when_available(self):
+        response = self.client.post(
+            "/recommend",
+            json={
+                "time_available": 15,
+                "mood": "quick",
+                "diet": "veg",
+                "mode": "normal",
+                "ingredients": ["poha", "onion"],
+                "category": "north-indian",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        item = response.json()[0]
+
+        self.assertEqual(item["nutrition"]["protein_g"], 7)
+        self.assertEqual(item["servings"], 1)
+        self.assertGreater(len(item["ingredients_with_quantities"]), 0)
+
     def test_meal_plan_returns_days_and_grocery_list(self):
         response = self.client.post(
             "/meal-plan",
