@@ -36,18 +36,40 @@ from db import (
 CSV_PATH    = Path(__file__).resolve().parent / "recipes.csv"
 MEALDB_BASE = "https://www.themealdb.com/api/json/v1/1"
 
-# Categories to pull from TheMealDB.
-# Keeping this focused keeps the startup seed time under ~60 seconds.
+# ── What to fetch ────────────────────────────────────────────────────────────
+# Category-based fetch (strCategory)
 FETCH_CATEGORIES = [
-    "Chicken", "Seafood", "Beef", "Lamb",
-    "Vegetarian", "Vegan", "Pasta", "Breakfast", "Side", "Starter",
+    "Chicken", "Seafood", "Beef", "Lamb", "Pork",
+    "Vegetarian", "Vegan", "Pasta", "Breakfast", "Side", "Starter", "Miscellaneous",
 ]
-MAX_PER_CATEGORY = 12   # max meals fetched per category
+# Area-based fetch (strArea) — gives authentic regional recipes
+# TheMealDB endpoint: filter.php?a=Chinese  (same shape as category filter)
+# Note: not all areas have meals on the free API — verified working list below
+FETCH_AREAS = [
+    "Chinese", "Japanese", "Mexican", "Italian",
+    "American", "British", "Thai", "Moroccan",
+    "French", "Greek", "Spanish", "Canadian",
+]
+MAX_PER_CATEGORY = 20   # max meals fetched per category/area
 
 # ── Lookup tables ─────────────────────────────────────────────────────────────
 
 VEG_CATEGORIES     = {"Vegetarian", "Vegan", "Pasta", "Side", "Breakfast", "Starter", "Dessert"}
 NON_VEG_CATEGORIES = {"Chicken", "Beef", "Seafood", "Lamb", "Pork", "Goat"}
+
+# For area-based fetch, diet is determined from the meal's category in the detail response
+# These area tags map to diet and simmer-category
+AREA_DIET_DEFAULT: dict[str, str] = {
+    "Indian": "veg",       # will be overridden per recipe based on category
+    "Chinese": "non-veg",
+    "Japanese": "non-veg",
+    "Mexican": "non-veg",
+    "Italian": "veg",
+    "American": "non-veg",
+    "British": "non-veg",
+    "Thai": "non-veg",
+    "Moroccan": "non-veg",
+}
 
 # TheMealDB category → Simmer category (overridden by area when available)
 CATEGORY_MAP: dict[str, str] = {
@@ -205,41 +227,120 @@ def seed_from_csv(force: bool = False) -> int:
 
 # ── MealDB seeder ─────────────────────────────────────────────────────────────
 
+def _meal_to_recipe(meal: dict, hint_category: str, hint_area: str, simmer_id: int) -> dict | None:
+    """
+    Normalise a TheMealDB full meal object into a Simmer recipe dict.
+    hint_category / hint_area are the filter values used to find this meal.
+    The recipe's actual strCategory / strArea override them where available.
+    """
+    name = (meal.get("strMeal") or "").strip()
+    if not name:
+        return None
+
+    # Prefer the actual category from the recipe over the filter hint
+    real_cat  = (meal.get("strCategory") or hint_category).strip()
+    real_area = (meal.get("strArea")     or hint_area).strip()
+
+    # Diet: driven by real category
+    if real_cat in VEG_CATEGORIES:
+        diet = "veg"
+    elif real_cat in NON_VEG_CATEGORIES:
+        diet = "non-veg"
+    else:
+        diet = AREA_DIET_DEFAULT.get(real_area, "non-veg")
+
+    time_min  = TIME_EST.get(real_cat,     TIME_EST.get(hint_category,     25))
+    calories  = CALORIE_EST.get(real_cat,  CALORIE_EST.get(hint_category, 280))
+    sim_cat   = AREA_MAP.get(real_area,    CATEGORY_MAP.get(real_cat, "other"))
+    tags      = _derive_tags(real_cat, time_min)
+
+    # MealDB thumbnail — append /preview for a smaller (300px) version
+    thumb = (meal.get("strMealThumb") or "").strip()
+
+    return {
+        "id":           simmer_id,
+        "name":         name,
+        "diet":         diet,
+        "time_minutes": time_min,
+        "calories":     calories,
+        "difficulty":   "medium",
+        "category":     sim_cat,
+        "tags":         tags,
+        "ingredients":  _parse_ingredients(meal),
+        "steps":        _parse_steps(meal.get("strInstructions", "")),
+        "image_url":    thumb,
+        "source":       "mealdb",
+        "external_id":  str(meal.get("idMeal", "")),
+    }
+
+
+async def _fetch_meal_list(client: httpx.AsyncClient, filter_type: str, value: str) -> list[dict]:
+    """Fetch meal list by category (c=) or area (a=), limited to MAX_PER_CATEGORY."""
+    param = "c" if filter_type == "category" else "a"
+    for attempt in range(3):
+        try:
+            resp = await client.get(
+                f"{MEALDB_BASE}/filter.php?{param}={value}",
+                timeout=httpx.Timeout(45.0),   # area lists can be large
+            )
+            resp.raise_for_status()
+            return (resp.json().get("meals") or [])[:MAX_PER_CATEGORY]
+        except httpx.TimeoutException:
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)  # backoff: 1s, 2s
+                continue
+            print(f"[seed]   TIMEOUT {filter_type}={value} after 3 attempts, skipping.")
+            return []
+        except Exception as exc:
+            print(f"[seed]   ERROR {filter_type}={value}: {exc}")
+            return []
+    return []
+
+
 async def seed_from_mealdb(force: bool = False) -> int:
     """
     Async: fetch recipes from TheMealDB public API and insert into SQLite.
+    Pulls from both categories AND geographic areas for wide variety.
     MealDB recipes receive integer IDs starting at 1001.
     Idempotent — skips already-imported meals unless force=True.
     """
     existing_ext_ids: set[str] = set() if force else get_existing_external_ids()
-    next_id = max(get_max_id(), 1000) + 1
-    inserted = 0
+    next_id   = max(get_max_id(), 1000) + 1
+    inserted  = 0
 
-    print(f"[seed] Starting TheMealDB fetch ({len(FETCH_CATEGORIES)} categories, "
-          f"max {MAX_PER_CATEGORY} per category)…")
+    # Build a combined fetch plan: (filter_type, value, hint_category, hint_area)
+    fetch_plan: list[tuple[str, str, str, str]] = []
+    for cat in FETCH_CATEGORIES:
+        fetch_plan.append(("category", cat, cat, "Unknown"))
+    for area in FETCH_AREAS:
+        fetch_plan.append(("area", area, "Miscellaneous", area))
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
-        for category in FETCH_CATEGORIES:
-            # ── 1. Fetch the meal list for this category ──────────────────
-            try:
-                resp = await client.get(f"{MEALDB_BASE}/filter.php?c={category}")
-                resp.raise_for_status()
-                basic_meals: list[dict] = (resp.json().get("meals") or [])[:MAX_PER_CATEGORY]
-            except Exception as exc:
-                print(f"[seed]   ✗ category {category}: {exc}")
+    print(f"[seed] TheMealDB: {len(fetch_plan)} fetch groups "
+          f"({len(FETCH_CATEGORIES)} categories + {len(FETCH_AREAS)} areas), "
+          f"max {MAX_PER_CATEGORY} each...")
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0)) as client:
+        for filter_type, value, hint_cat, hint_area in fetch_plan:
+            basic_meals = await _fetch_meal_list(client, filter_type, value)
+            if not basic_meals:
                 continue
 
-            print(f"[seed]   {category}: {len(basic_meals)} meals to process")
+            new_count = sum(
+                1 for b in basic_meals
+                if str(b.get("idMeal", "")).strip() not in existing_ext_ids
+            )
+            if new_count == 0:
+                print(f"[seed]   {filter_type}={value}: all {len(basic_meals)} already seeded")
+                continue
 
-            # ── 2. Fetch details for each meal ────────────────────────────
+            print(f"[seed]   {filter_type}={value}: {new_count}/{len(basic_meals)} new meals")
+
             for basic in basic_meals:
                 meal_id = str(basic.get("idMeal", "")).strip()
-                if not meal_id:
+                if not meal_id or meal_id in existing_ext_ids:
                     continue
-                if meal_id in existing_ext_ids:
-                    continue  # already in DB
 
-                await asyncio.sleep(0.08)   # ~12 req/s — well within free-tier limits
+                await asyncio.sleep(0.08)   # gentle rate limit (~12 req/s)
 
                 try:
                     r2 = await client.get(f"{MEALDB_BASE}/lookup.php?i={meal_id}")
@@ -247,35 +348,14 @@ async def seed_from_mealdb(force: bool = False) -> int:
                     details_list = r2.json().get("meals") or []
                     if not details_list:
                         continue
-                    meal = details_list[0]
+                    meal_detail = details_list[0]
                 except Exception as exc:
-                    print(f"[seed]     ✗ meal {meal_id}: {exc}")
+                    print(f"[seed]     SKIP meal {meal_id}: {exc}")
                     continue
 
-                name = (meal.get("strMeal") or "").strip()
-                if not name:
+                recipe = _meal_to_recipe(meal_detail, hint_cat, hint_area, next_id)
+                if recipe is None:
                     continue
-
-                area      = (meal.get("strArea") or "Unknown").strip()
-                time_min  = TIME_EST.get(category, 25)
-                diet      = "non-veg" if category in NON_VEG_CATEGORIES else "veg"
-                sim_cat   = AREA_MAP.get(area, CATEGORY_MAP.get(category, "other"))
-
-                recipe = {
-                    "id":           next_id,
-                    "name":         name,
-                    "diet":         diet,
-                    "time_minutes": time_min,
-                    "calories":     CALORIE_EST.get(category, 280),
-                    "difficulty":   "medium",
-                    "category":     sim_cat,
-                    "tags":         _derive_tags(category, time_min),
-                    "ingredients":  _parse_ingredients(meal),
-                    "steps":        _parse_steps(meal.get("strInstructions", "")),
-                    "image_url":    meal.get("strMealThumb", ""),
-                    "source":       "mealdb",
-                    "external_id":  meal_id,
-                }
 
                 conn = get_connection()
                 upsert_recipe(conn, recipe)
@@ -286,8 +366,9 @@ async def seed_from_mealdb(force: bool = False) -> int:
                 next_id  += 1
                 inserted += 1
 
-    print(f"[seed] TheMealDB: inserted {inserted} new recipes (total DB now "
-          f"~{inserted + count_by_source('csv')} rows).")
+    total = count_by_source("mealdb")
+    print(f"[seed] TheMealDB done: {inserted} new recipes inserted "
+          f"(total MealDB in DB: {total}).")
     return inserted
 
 
