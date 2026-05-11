@@ -109,6 +109,7 @@ class RecommendRequest(BaseModel):
     mode: Literal["normal", "decide"] = "normal"
     ingredients: list[str] | None = None
     category: str | None = None
+    name_query: str | None = None   # free-text: filter by name or key ingredient
 
 
 class TrackRequest(BaseModel):
@@ -206,8 +207,23 @@ def build_reason(tags: list[str], time_minutes: int, time_available: int) -> str
 def ingredient_match_percent(recipe_ingredients: list[str], user_ingredients: set[str] | None) -> int:
     if not recipe_ingredients or not user_ingredients:
         return 0
-    matching = len(set(recipe_ingredients) & user_ingredients)
+    matching = sum(
+        1 for ri in recipe_ingredients
+        if any(ui in ri or ri in ui for ui in user_ingredients)
+    )
     return round((matching / len(recipe_ingredients)) * 100)
+
+
+def _name_query_matches(recipe: dict, query: str) -> bool:
+    """True if the recipe name or any ingredient contains the query term."""
+    q = query.strip().lower()
+    if not q:
+        return True
+    name_lower = recipe["name"].lower()
+    if q in name_lower:
+        return True
+    # Check ingredients
+    return any(q in ing for ing in recipe.get("ingredients_list", []))
 
 
 def get_recipe_enrichment(recipe) -> dict:
@@ -343,7 +359,18 @@ def recommend(payload: RecommendRequest, request: Request):
         if category_filtered_recipes:
             filtered_recipes = category_filtered_recipes
 
-    # Optional ingredient-based filtering (>= 50% of recipe ingredients match).
+    # Name / key-ingredient query — e.g. "pork", "pasta", "biryani".
+    # Applied before the ingredient-tag filter so it works standalone.
+    name_query = (payload.name_query or "").strip().lower()
+    if name_query:
+        name_filtered = [r for r in filtered_recipes if _name_query_matches(r, name_query)]
+        # Fall back to all diet-matching recipes if the query is too narrow
+        if not name_filtered:
+            name_filtered = [r for r in recipes if _name_query_matches(r, name_query)]
+        if name_filtered:
+            filtered_recipes = name_filtered
+
+    # Optional ingredient-based filtering (>= 30% of recipe ingredients match via substring).
     normalized_user_ingredients = None
     if payload.ingredients:
         normalized_user_ingredients = {
@@ -353,13 +380,21 @@ def recommend(payload: RecommendRequest, request: Request):
     ingredient_match_ids: set[int] = set()
     if normalized_user_ingredients:
         ingredient_filtered = []
+        # Threshold: 30% for multi-ingredient searches, but for a single ingredient
+        # we require at least 1 substring match (allows "pork" to match "pork chops").
+        single_ing_mode = len(normalized_user_ingredients) <= 2
+        threshold = 0.1 if single_ing_mode else 0.3
         for r in filtered_recipes:
-            recipe_ingredients = set(r.get("ingredients_list", []))
+            recipe_ingredients = r.get("ingredients_list", [])
             if not recipe_ingredients:
                 continue
-            matching = len(recipe_ingredients & normalized_user_ingredients)
+            # Substring matching: "pork" matches "pork belly", "pork chops", etc.
+            matching = sum(
+                1 for ri in recipe_ingredients
+                if any(ui in ri or ri in ui for ui in normalized_user_ingredients)
+            )
             match_score = matching / len(recipe_ingredients)
-            if match_score >= 0.5:
+            if match_score >= threshold:
                 ingredient_filtered.append(r)
                 ingredient_match_ids.add(int(r["id"]))
 
