@@ -196,10 +196,8 @@ CREATE TABLE IF NOT EXISTS public.usage_log (
 CREATE INDEX IF NOT EXISTS idx_usage_log_user_feature_time
     ON public.usage_log (user_id, feature, used_at DESC);
 
--- Partial index — only recent rows (hot path for daily-count queries)
-CREATE INDEX IF NOT EXISTS idx_usage_log_recent
-    ON public.usage_log (user_id, feature, used_at DESC)
-    WHERE used_at > (NOW() - INTERVAL '2 days');
+-- Note: partial indexes with NOW() are invalid (NOW() is STABLE not IMMUTABLE).
+-- idx_usage_log_user_feature_time above already covers the daily-count queries.
 
 ALTER TABLE public.usage_log ENABLE ROW LEVEL SECURITY;
 
@@ -228,14 +226,13 @@ CREATE TABLE IF NOT EXISTS public.otp_requests (
     metadata        JSONB       NOT NULL DEFAULT '{}'
 );
 
--- Partial indexes — only cover recent rows (hot path for rate-limit queries)
-CREATE INDEX IF NOT EXISTS idx_otp_phone_recent
-    ON public.otp_requests (phone, requested_at DESC)
-    WHERE requested_at > (NOW() - INTERVAL '15 minutes');
+-- Full indexes on rate-limit query columns
+-- (partial indexes with NOW() are invalid — NOW() is STABLE not IMMUTABLE)
+CREATE INDEX IF NOT EXISTS idx_otp_phone_time
+    ON public.otp_requests (phone, requested_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_otp_ip_recent
-    ON public.otp_requests (ip_address, requested_at DESC)
-    WHERE requested_at > (NOW() - INTERVAL '1 hour');
+CREATE INDEX IF NOT EXISTS idx_otp_ip_time
+    ON public.otp_requests (ip_address, requested_at DESC);
 
 
 -- ═══════════════════════════════════════════════════════════════
