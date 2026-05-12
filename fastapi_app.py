@@ -307,9 +307,9 @@ async def load_recipes_on_startup():
 
     _db.init_db()
 
-    # Always ensure CSV data is present
-    if _db.count_by_source("csv") == 0:
-        seed_from_csv()
+    # Always re-seed CSV so new rows (added after initial deploy) are picked up.
+    # seed_from_csv uses upsert — safe to call every startup, takes < 1 second.
+    seed_from_csv(force=True)
 
     # Serve requests immediately with whatever is in the DB
     app.state.recipes = _db.load_all_recipes()
@@ -339,6 +339,71 @@ def get_loaded_recipes(request: Request):
 @app.get("/")
 def home():
     return FileResponse(INDEX_PATH)
+
+
+@app.get("/search")
+def search_recipes(q: str, diet: str = "", limit: int = 6, request: Request = None):
+    """
+    Pure text search ranked by relevance.
+    Completely separate from /recommend — no mood/time scoring, no explore-exploit,
+    no recent_suggestions filtering.  Returns up to `limit` best matches.
+
+    Relevance tiers (higher = better):
+      100 — exact name match
+       80 — name starts with query
+       60 — query is a phrase inside the name
+       50 — all query words appear in name (handles "butter chicken")
+       30 — any query word appears in name
+       20 — query phrase found in ingredients
+       10 — any query word found in ingredients
+
+    Diet is a soft preference: matching diet gets +5 but non-matching results
+    are still returned as fallback (so veg users CAN still see Butter Chicken).
+    """
+    recipes = get_loaded_recipes(request)
+    q_lower = (q or "").strip().lower()
+    if len(q_lower) < 2:
+        return []
+
+    words = [w for w in q_lower.split() if w]
+    scored: list[tuple[int, dict]] = []
+
+    for recipe in recipes:
+        name_lower = recipe["name"].lower()
+        ing_text   = " ".join(recipe.get("ingredients_list", []))
+        all_text   = name_lower + " " + ing_text
+
+        # ── Name matching (priority 1) ─────────────────────────────────────
+        if q_lower == name_lower:
+            score = 100
+        elif name_lower.startswith(q_lower):
+            score = 80
+        elif q_lower in name_lower:
+            score = 60
+        elif len(words) > 1 and all(w in name_lower for w in words):
+            score = 50
+        elif any(w in name_lower for w in words):
+            score = 30
+        # ── Ingredient matching (priority 2) ──────────────────────────────
+        elif q_lower in ing_text:
+            score = 20
+        elif len(words) > 1 and all(w in ing_text for w in words):
+            score = 15
+        elif any(w in ing_text for w in words):
+            score = 10
+        else:
+            continue  # no match
+
+        # Soft diet preference boost (not a hard filter)
+        if diet and recipe["diet"].strip().lower() == diet.strip().lower():
+            score += 5
+
+        scored.append((score, recipe))
+
+    # Sort: relevance desc, then name asc for stable ordering
+    scored.sort(key=lambda x: (-x[0], x[1]["name"]))
+
+    return [recipe_summary(r) for _, r in scored[:limit]]
 
 
 @app.post("/recommend")
