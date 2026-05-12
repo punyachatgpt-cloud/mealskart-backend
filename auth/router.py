@@ -7,6 +7,7 @@ Endpoints:
   GET  /auth/me             — return current user profile
   POST /auth/onboarding     — save display_name + diet/cuisines preferences
   POST /auth/logout         — revoke Supabase session
+  POST /auth/check-limit    — check + log usage for a gated feature (Phase 5)
 
 Rules:
   - No existing routes are modified.
@@ -26,7 +27,8 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, field_validator
 
-from .dependencies import get_current_user
+from .dependencies import get_current_user, get_optional_user
+from .limits import Feature, check_limit, log_usage
 from .supabase_client import supabase_admin
 
 load_dotenv()
@@ -398,3 +400,55 @@ def logout(user: dict = Depends(get_current_user)) -> dict[str, str]:
         print(f"[auth] logout sign_out failed (non-fatal): {exc}")
 
     return {"message": "Logged out successfully."}
+
+
+# ── Phase 5: feature usage gate ───────────────────────────────────────────────
+
+class CheckLimitRequest(BaseModel):
+    feature: str
+    session_id: str | None = None
+
+
+@router.post("/check-limit", status_code=status.HTTP_200_OK)
+def check_limit_endpoint(
+    body: CheckLimitRequest,
+    user: dict | None = Depends(get_optional_user),
+) -> dict[str, Any]:
+    """
+    Check and log usage for a gated feature.
+
+    Called by the frontend before executing client-side gated features
+    (Ask Chef, Pantry, Collections, Goal, Taste DNA) and before API-backed
+    features (Decide, Meal Plan) where we can't gate server-side without
+    touching existing routes.
+
+    Behaviour:
+    - No token / anonymous user → 200 (allow; enforcement is off for guests)
+    - Token present + enforcement_enabled FALSE for their tier → 200 (allow + log)
+    - Token present + enforcement_enabled TRUE + over limit → 429
+    - Token present + enforcement_enabled TRUE + under limit → 200 (allow + log)
+
+    The feature string is validated against the known features list.
+    Unknown feature names → 200 (fail open, never block unknown features).
+    """
+    # Anonymous users — allow silently, nothing to log
+    if user is None:
+        return {"allowed": True, "reason": "anonymous"}
+
+    # Validate feature name — reject obviously wrong values, but fail open for unknowns
+    valid_features = {
+        "decide_for_me", "ask_chef", "pantry_items",
+        "collections", "meal_plan", "goal_tracking", "advanced_taste_dna",
+    }
+    feature = body.feature.strip()
+    if feature not in valid_features:
+        return {"allowed": True, "reason": "unknown_feature"}
+
+    # check_limit() raises HTTP 429 if the user is over their limit.
+    # If enforcement_enabled is FALSE (day one), it returns immediately.
+    check_limit(user, feature, session_id=body.session_id)  # type: ignore[arg-type]
+
+    # Log the usage after the gate passes
+    log_usage(user, feature, session_id=body.session_id)  # type: ignore[arg-type]
+
+    return {"allowed": True}
