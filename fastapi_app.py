@@ -284,11 +284,11 @@ INDEX_PATH = Path(__file__).resolve().parent / "index.html"
 interactions = []
 recent_suggestions = []
 user_preferences = {
-    "quick": 0,
-    "healthy": 0,
-    "comfort": 0,
-    "veg": 0,
-    "non-veg": 0,
+    "quick": 0, "healthy": 0, "comfort": 0,
+    "veg": 0, "non-veg": 0,
+    # cuisine categories — boosted when user cooks from them
+    "north-indian": 0, "south-indian": 0, "continental": 0,
+    "chinese": 0, "snacks": 0, "sweets": 0, "drinks": 0, "salad": 0, "other": 0,
 }
 
 
@@ -526,11 +526,13 @@ def recommend(payload: RecommendRequest, request: Request):
         )
         score += random.uniform(0, 1)
 
-        # Small personalization bonus based on learned preferences.
+        # Personalization bonus: tags + diet + cuisine category learned from cook history
         preference_bonus = 0.0
         for tag in recipe.get("tags", []):
             preference_bonus += min(user_preferences.get(tag, 0), 10) * 0.5
         preference_bonus += min(user_preferences.get(recipe.get("diet", ""), 0), 10) * 0.5
+        recipe_cat = (recipe.get("category") or "").strip().lower()
+        preference_bonus += min(user_preferences.get(recipe_cat, 0), 10) * 0.4
         score += preference_bonus
 
         # Ingredient match boost (only when ingredient filtering is active).
@@ -784,6 +786,10 @@ def track_interaction(payload: TrackRequest, request: Request):
                 diet = (recipe.get("diet") or "").strip().lower()
                 if diet in user_preferences:
                     user_preferences[diet] += 1
+                # Track cuisine category preference
+                cat = (recipe.get("category") or "").strip().lower()
+                if cat in user_preferences:
+                    user_preferences[cat] += 1
 
     interaction = {
         "action": payload.action,
