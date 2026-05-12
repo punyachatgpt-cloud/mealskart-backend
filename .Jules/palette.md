@@ -1,0 +1,3 @@
+## 2025-05-14 - Ensuring Accessibility for Custom Interactive Elements
+**Learning:** In single-page applications, custom interactive elements (like recipe cards implemented as `<article>` tags) are often overlooked in the accessibility tree. Without `tabindex="0"`, `role="button"`, and explicit keyboard listeners for 'Enter' and 'Space', these elements remain invisible to keyboard-only users and screen readers, even if they have click handlers.
+**Action:** When making non-semantic elements interactive, always add `tabindex="0"`, `role="button"`, and an 'aria-label', and ensure they respond to both keyboard and mouse events.
