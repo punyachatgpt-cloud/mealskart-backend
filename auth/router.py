@@ -113,7 +113,7 @@ def _check_otp_rate_limit(phone: str, ip: str) -> None:
         .table("otp_requests")
         .select("id", count="exact")
         .eq("phone", phone)
-        .gte("created_at", phone_cutoff)
+        .gte("requested_at", phone_cutoff)
         .execute()
     )
     phone_count = phone_result.count or 0
@@ -133,7 +133,7 @@ def _check_otp_rate_limit(phone: str, ip: str) -> None:
         .table("otp_requests")
         .select("id", count="exact")
         .eq("ip_address", ip)
-        .gte("created_at", ip_cutoff)
+        .gte("requested_at", ip_cutoff)
         .execute()
     )
     ip_count = ip_result.count or 0
