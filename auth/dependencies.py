@@ -1,8 +1,10 @@
 """
 FastAPI dependency: get_current_user()
 
-Validates the Bearer JWT issued by Supabase Auth, looks up the matching
-public.users row, and returns it as a plain dict.
+Validates the Bearer JWT issued by Supabase Auth by calling
+supabase_admin.auth.get_user(token) — this approach works with any JWT
+signing algorithm Supabase uses (ES256/ECC P-256, HS256, future rotations)
+without needing to hard-code a secret or algorithm.
 
 Usage in a route:
     @router.get("/me")
@@ -13,20 +15,10 @@ Raises HTTP 401 for missing, malformed, or expired tokens.
 Raises HTTP 403 if the user account has been soft-deleted.
 """
 
-import os
-
-from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import ExpiredSignatureError, JWTError, jwt
 
 from .supabase_client import supabase_admin
-
-load_dotenv()
-
-_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
-_JWT_ALGORITHM = "HS256"
-_JWT_AUDIENCE = "authenticated"
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -35,8 +27,8 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> dict:
     """
-    Decode the Supabase JWT, verify signature + expiry, load public.users.
-    Returns the users row as a dict.
+    Verify the Supabase JWT via the Auth API (algorithm-agnostic),
+    then load and return the public.users row.
     """
     if not credentials:
         raise HTTPException(
@@ -46,37 +38,29 @@ def get_current_user(
 
     token = credentials.credentials
 
-    if not _JWT_SECRET:
-        raise RuntimeError(
-            "SUPABASE_JWT_SECRET is not configured. "
-            "Set it in .env (Supabase Dashboard → Settings → API → JWT Secret)."
-        )
-
-    # ── 1. Decode and verify JWT ─────────────────────────────────────────────
+    # ── 1. Verify token via Supabase Auth (handles ES256, HS256, key rotation) ─
     try:
-        payload = jwt.decode(
-            token,
-            _JWT_SECRET,
-            algorithms=[_JWT_ALGORITHM],
-            audience=_JWT_AUDIENCE,
-        )
-    except ExpiredSignatureError:
+        auth_response = supabase_admin.auth.get_user(token)
+        auth_user = auth_response.user
+    except Exception as exc:
+        err = str(exc).lower()
+        if "expired" in err or "invalid" in err or "not found" in err:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has expired or is invalid — please sign in again.",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired — please sign in again.",
-        )
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {exc}",
+            detail="Could not verify token.",
         )
 
-    auth_id: str | None = payload.get("sub")
-    if not auth_id:
+    if not auth_user or not auth_user.id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token missing 'sub' claim.",
+            detail="Token missing user identity.",
         )
+
+    auth_id: str = str(auth_user.id)
 
     # ── 2. Load public.users row ─────────────────────────────────────────────
     result = (
@@ -89,9 +73,6 @@ def get_current_user(
     )
 
     if not result.data:
-        # Row should have been created by the handle_new_auth_user trigger.
-        # If it's missing, the token is valid but the user row is absent —
-        # treat as unauthenticated until the row is created.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User record not found — please sign up.",
