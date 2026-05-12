@@ -1,18 +1,42 @@
 import asyncio
 import csv
+import os
 import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import db as _db
+from auth.router import router as auth_router
 
+load_dotenv()
 
 app = FastAPI(title="Recipe Recommender API")
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Allow the Vercel frontend origin(s) to call auth endpoints.
+# Recipe routes were previously accessible from any origin (no CORS header set),
+# which is preserved — CORSMiddleware only adds headers, never blocks.
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+_allow_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allow_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+# ── Auth routes ───────────────────────────────────────────────────────────────
+# Mounted at /auth/* — all new files, no existing routes changed.
+app.include_router(auth_router)
 
 
 ENRICHED_RECIPES = {
