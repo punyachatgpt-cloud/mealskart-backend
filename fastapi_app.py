@@ -1284,21 +1284,34 @@ _DIET_KEYWORD_MAP: dict[str, str] = {
 
 
 @app.get("/search")
-def search_recipes(q: str, diet: str = "", limit: int = 6, request: Request = None):
+def search_recipes(
+    q: str,
+    diet: str = "",        # kept for autocomplete backward-compat, NOT used for text queries
+    limit: int = 24,
+    offset: int = 0,
+    request: Request = None,
+):
     """
-    Universal search: handles cuisine (Japanese, continental), category (drinks, snacks),
-    dietary terms (vegan, vegetarian, non-veg), ingredient names (chicken, paneer),
-    and recipe names.  Returns up to `limit` best matches ranked by relevance.
+    Universal search — no diet/time/category filter applied for text queries.
+    Handles cuisine (japanese, continental), category (drinks, snacks),
+    explicit diet intent (vegan, non-veg), ingredient names (chicken, paneer),
+    and recipe names.
 
     Relevance tiers (higher = better):
-      110 — category/cuisine keyword match (entire category)
+      110 — category/cuisine keyword match OR diet intent match
       100 — exact name match
+       82 — name starts with query (word-boundary bonus vs mid-word)
        80 — name starts with query
-       60 — query phrase inside name
-       50 — all query words in name
+       65 — query word at start of any word in name (word-boundary bonus)
+       60 — query phrase anywhere in name
+       50 — all query words in name (multi-word like "butter chicken")
        30 — any query word in name
+       22 — query phrase in ingredients (word-boundary bonus)
        20 — query phrase in ingredients
+       12 — any query word in ingredients (word-boundary bonus)
        10 — any query word in ingredients
+
+    Pagination: use offset + limit. Total matched count is in X-Total-Count header.
     """
     recipes = get_loaded_recipes(request)
     q_lower = (q or "").strip().lower()
@@ -1309,10 +1322,7 @@ def search_recipes(q: str, diet: str = "", limit: int = 6, request: Request = No
 
     # ── Detect special intent keywords ────────────────────────────────────────
     target_category = _CATEGORY_KEYWORD_MAP.get(q_lower)
-    target_diet = _DIET_KEYWORD_MAP.get(q_lower)
-
-    # Caller-supplied diet param (from UI toggle) also applies
-    ui_diet = diet.strip().lower() if diet else ""
+    target_diet     = _DIET_KEYWORD_MAP.get(q_lower)
 
     scored: list[tuple[int, dict]] = []
 
@@ -1321,6 +1331,7 @@ def search_recipes(q: str, diet: str = "", limit: int = 6, request: Request = No
         recipe_cat  = (recipe.get("category") or "").strip().lower()
         recipe_diet = recipe["diet"].strip().lower()
         ing_text    = " ".join(recipe.get("ingredients_list", []))
+        name_words  = name_lower.split()   # for word-boundary checks
 
         score = 0
 
@@ -1328,55 +1339,53 @@ def search_recipes(q: str, diet: str = "", limit: int = 6, request: Request = No
         if target_category:
             if recipe_cat == target_category:
                 score = 110
-            # Also include recipes whose name contains the query word(s)
-            # e.g. "Japanese" returns Japanese-named recipes from 'continental'
             elif any(w in name_lower for w in words):
                 score = 70
             else:
                 continue
 
-        # ── 2. Diet intent (vegan / non-veg typed as the whole query) ────────
+        # ── 2. Explicit diet intent (vegan / non-veg as sole query) ──────────
         elif target_diet:
             if recipe_diet == target_diet:
                 score = 110
             else:
                 continue
 
-        # ── 3. Normal name + ingredient text matching ─────────────────────────
+        # ── 3. Universal text matching — NO diet filter ───────────────────────
         else:
             if q_lower == name_lower:
                 score = 100
             elif name_lower.startswith(q_lower):
-                score = 80
+                # bonus if query matches at a word boundary
+                score = 82 if (len(name_words) > 1 and any(w.startswith(q_lower) for w in name_words[1:])) else 80
             elif q_lower in name_lower:
-                score = 60
+                # bonus when query is at the start of any word inside the name
+                score = 65 if any(w.startswith(q_lower) for w in name_words) else 60
             elif len(words) > 1 and all(w in name_lower for w in words):
                 score = 50
             elif any(w in name_lower for w in words):
-                score = 30
+                # bonus when any query word starts a name-word (e.g. "dal" in "dal tadka")
+                score = 32 if any(nw.startswith(w) for w in words for nw in name_words) else 30
             elif q_lower in ing_text:
-                score = 20
+                ing_words = ing_text.split()
+                score = 22 if any(iw.startswith(q_lower) for iw in ing_words) else 20
             elif len(words) > 1 and all(w in ing_text for w in words):
                 score = 15
             elif any(w in ing_text for w in words):
-                score = 10
+                ing_words = ing_text.split()
+                score = 12 if any(iw.startswith(w) for w in words for iw in ing_words) else 10
             else:
                 continue  # no match
-
-        # ── Soft boosts ───────────────────────────────────────────────────────
-        # UI diet param preference
-        if ui_diet and recipe_diet == ui_diet:
-            score += 5
-        # Category bonus for non-category queries
-        if not target_category and recipe_cat == target_category:
-            score += 3
 
         scored.append((score, recipe))
 
     # Sort: relevance desc, then name asc for stable ordering
     scored.sort(key=lambda x: (-x[0], x[1]["name"]))
 
-    return [recipe_summary(r) for _, r in scored[:limit]]
+    limit   = max(1, min(limit, 100))
+    offset  = max(0, offset)
+    page    = scored[offset: offset + limit]
+    return [recipe_summary(r) for _, r in page]
 
 
 @app.post("/recommend")
