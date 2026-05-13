@@ -1233,24 +1233,72 @@ def home():
     return FileResponse(INDEX_PATH)
 
 
+# Maps user-typed terms to internal category slugs
+_CATEGORY_KEYWORD_MAP: dict[str, str] = {
+    "north indian": "north-indian",
+    "north-indian": "north-indian",
+    "northindian": "north-indian",
+    "north india": "north-indian",
+    "south indian": "south-indian",
+    "south-indian": "south-indian",
+    "southindian": "south-indian",
+    "south india": "south-indian",
+    "chinese": "chinese",
+    "china": "chinese",
+    "continental": "continental",
+    "western": "continental",
+    "european": "continental",
+    "drink": "drinks",
+    "drinks": "drinks",
+    "juice": "drinks",
+    "smoothie": "drinks",
+    "smoothies": "drinks",
+    "beverage": "drinks",
+    "beverages": "drinks",
+    "shake": "drinks",
+    "snack": "snacks",
+    "snacks": "snacks",
+    "starter": "snacks",
+    "starters": "snacks",
+    "appetizer": "snacks",
+    "appetizers": "snacks",
+    "salad": "salad",
+    "salads": "salad",
+}
+
+# Maps user-typed diet terms to internal diet values
+_DIET_KEYWORD_MAP: dict[str, str] = {
+    "vegan": "veg",
+    "vegetarian": "veg",
+    "veg": "veg",
+    "veggie": "veg",
+    "plant based": "veg",
+    "plant-based": "veg",
+    "non-veg": "non-veg",
+    "non veg": "non-veg",
+    "nonveg": "non-veg",
+    "meat": "non-veg",
+    "meaty": "non-veg",
+    "non vegetarian": "non-veg",
+}
+
+
 @app.get("/search")
 def search_recipes(q: str, diet: str = "", limit: int = 6, request: Request = None):
     """
-    Pure text search ranked by relevance.
-    Completely separate from /recommend — no mood/time scoring, no explore-exploit,
-    no recent_suggestions filtering.  Returns up to `limit` best matches.
+    Universal search: handles cuisine (Japanese, continental), category (drinks, snacks),
+    dietary terms (vegan, vegetarian, non-veg), ingredient names (chicken, paneer),
+    and recipe names.  Returns up to `limit` best matches ranked by relevance.
 
     Relevance tiers (higher = better):
+      110 — category/cuisine keyword match (entire category)
       100 — exact name match
        80 — name starts with query
-       60 — query is a phrase inside the name
-       50 — all query words appear in name (handles "butter chicken")
-       30 — any query word appears in name
-       20 — query phrase found in ingredients
-       10 — any query word found in ingredients
-
-    Diet is a soft preference: matching diet gets +5 but non-matching results
-    are still returned as fallback (so veg users CAN still see Butter Chicken).
+       60 — query phrase inside name
+       50 — all query words in name
+       30 — any query word in name
+       20 — query phrase in ingredients
+       10 — any query word in ingredients
     """
     recipes = get_loaded_recipes(request)
     q_lower = (q or "").strip().lower()
@@ -1258,37 +1306,70 @@ def search_recipes(q: str, diet: str = "", limit: int = 6, request: Request = No
         return []
 
     words = [w for w in q_lower.split() if w]
+
+    # ── Detect special intent keywords ────────────────────────────────────────
+    target_category = _CATEGORY_KEYWORD_MAP.get(q_lower)
+    target_diet = _DIET_KEYWORD_MAP.get(q_lower)
+
+    # Caller-supplied diet param (from UI toggle) also applies
+    ui_diet = diet.strip().lower() if diet else ""
+
     scored: list[tuple[int, dict]] = []
 
     for recipe in recipes:
-        name_lower = recipe["name"].lower()
-        ing_text   = " ".join(recipe.get("ingredients_list", []))
-        all_text   = name_lower + " " + ing_text
+        name_lower  = recipe["name"].lower()
+        recipe_cat  = (recipe.get("category") or "").strip().lower()
+        recipe_diet = recipe["diet"].strip().lower()
+        ing_text    = " ".join(recipe.get("ingredients_list", []))
 
-        # ── Name matching (priority 1) ─────────────────────────────────────
-        if q_lower == name_lower:
-            score = 100
-        elif name_lower.startswith(q_lower):
-            score = 80
-        elif q_lower in name_lower:
-            score = 60
-        elif len(words) > 1 and all(w in name_lower for w in words):
-            score = 50
-        elif any(w in name_lower for w in words):
-            score = 30
-        # ── Ingredient matching (priority 2) ──────────────────────────────
-        elif q_lower in ing_text:
-            score = 20
-        elif len(words) > 1 and all(w in ing_text for w in words):
-            score = 15
-        elif any(w in ing_text for w in words):
-            score = 10
+        score = 0
+
+        # ── 1. Category / cuisine intent ─────────────────────────────────────
+        if target_category:
+            if recipe_cat == target_category:
+                score = 110
+            # Also include recipes whose name contains the query word(s)
+            # e.g. "Japanese" returns Japanese-named recipes from 'continental'
+            elif any(w in name_lower for w in words):
+                score = 70
+            else:
+                continue
+
+        # ── 2. Diet intent (vegan / non-veg typed as the whole query) ────────
+        elif target_diet:
+            if recipe_diet == target_diet:
+                score = 110
+            else:
+                continue
+
+        # ── 3. Normal name + ingredient text matching ─────────────────────────
         else:
-            continue  # no match
+            if q_lower == name_lower:
+                score = 100
+            elif name_lower.startswith(q_lower):
+                score = 80
+            elif q_lower in name_lower:
+                score = 60
+            elif len(words) > 1 and all(w in name_lower for w in words):
+                score = 50
+            elif any(w in name_lower for w in words):
+                score = 30
+            elif q_lower in ing_text:
+                score = 20
+            elif len(words) > 1 and all(w in ing_text for w in words):
+                score = 15
+            elif any(w in ing_text for w in words):
+                score = 10
+            else:
+                continue  # no match
 
-        # Soft diet preference boost (not a hard filter)
-        if diet and recipe["diet"].strip().lower() == diet.strip().lower():
+        # ── Soft boosts ───────────────────────────────────────────────────────
+        # UI diet param preference
+        if ui_diet and recipe_diet == ui_diet:
             score += 5
+        # Category bonus for non-category queries
+        if not target_category and recipe_cat == target_category:
+            score += 3
 
         scored.append((score, recipe))
 
