@@ -402,6 +402,47 @@ def logout(user: dict = Depends(get_current_user)) -> dict[str, str]:
     return {"message": "Logged out successfully."}
 
 
+# ── Phase 6: cloud sync ────────────────────────────────────────────────────────
+
+class SyncRequest(BaseModel):
+    app_data: dict
+
+
+@router.get("/sync", status_code=status.HTTP_200_OK)
+def get_sync(user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    """
+    Return the cloud-stored app_data for the authenticated user.
+
+    Stored under users.metadata.app_data (JSONB).
+    Returns {"app_data": {}} when no data has been pushed yet.
+    """
+    metadata: dict = user.get("metadata") or {}
+    return {"app_data": metadata.get("app_data") or {}}
+
+
+@router.post("/sync", status_code=status.HTTP_200_OK)
+def post_sync(
+    body: SyncRequest,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    Persist app_data for the authenticated user.
+
+    Merges into existing metadata (other keys like diet/cuisines are preserved).
+    The frontend is responsible for sending a complete, already-merged payload —
+    the backend performs a shallow metadata merge only (sets metadata.app_data).
+    """
+    existing_metadata: dict = user.get("metadata") or {}
+    existing_metadata["app_data"] = body.app_data
+
+    supabase_admin.table("users") \
+        .update({"metadata": existing_metadata}) \
+        .eq("id", user["id"]) \
+        .execute()
+
+    return {"ok": True}
+
+
 # ── Phase 5: feature usage gate ───────────────────────────────────────────────
 
 class CheckLimitRequest(BaseModel):
