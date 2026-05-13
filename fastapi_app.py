@@ -1233,6 +1233,11 @@ def home():
     return FileResponse(INDEX_PATH)
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 # Maps user-typed terms to internal category slugs
 _CATEGORY_KEYWORD_MAP: dict[str, str] = {
     "north indian": "north-indian",
