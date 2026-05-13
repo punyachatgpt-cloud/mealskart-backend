@@ -93,6 +93,14 @@
       color: #0f4c31;
     }
 
+    .choice-btn:focus-visible,
+    .action:focus-visible,
+    .close-btn:focus-visible,
+    .card:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .action {
       width: 100%;
       border: none;
@@ -285,26 +293,26 @@
 
     <section class="panel">
       <p class="section-label">1. Time</p>
-      <div class="choices" id="timeChoices">
-        <button class="choice-btn selected" data-group="time" data-value="15">15 min</button>
-        <button class="choice-btn" data-group="time" data-value="30">30 min</button>
+      <div class="choices" id="timeChoices" role="group" aria-label="Available time">
+        <button class="choice-btn selected" data-group="time" data-value="15" aria-pressed="true">15 min</button>
+        <button class="choice-btn" data-group="time" data-value="30" aria-pressed="false">30 min</button>
       </div>
     </section>
 
     <section class="panel">
       <p class="section-label">2. Mood</p>
-      <div class="choices" id="moodChoices">
-        <button class="choice-btn selected" data-group="mood" data-value="quick">quick</button>
-        <button class="choice-btn" data-group="mood" data-value="healthy">healthy</button>
-        <button class="choice-btn" data-group="mood" data-value="comfort">comfort</button>
+      <div class="choices" id="moodChoices" role="group" aria-label="Desired mood">
+        <button class="choice-btn selected" data-group="mood" data-value="quick" aria-pressed="true">quick</button>
+        <button class="choice-btn" data-group="mood" data-value="healthy" aria-pressed="false">healthy</button>
+        <button class="choice-btn" data-group="mood" data-value="comfort" aria-pressed="false">comfort</button>
       </div>
     </section>
 
     <section class="panel">
       <p class="section-label">3. Diet</p>
-      <div class="choices" id="dietChoices">
-        <button class="choice-btn selected" data-group="diet" data-value="veg">veg</button>
-        <button class="choice-btn" data-group="diet" data-value="non-veg">non-veg</button>
+      <div class="choices" id="dietChoices" role="group" aria-label="Dietary preference">
+        <button class="choice-btn selected" data-group="diet" data-value="veg" aria-pressed="true">veg</button>
+        <button class="choice-btn" data-group="diet" data-value="non-veg" aria-pressed="false">non-veg</button>
       </div>
     </section>
 
@@ -393,7 +401,9 @@
 
     function setSelected(group, value) {
       document.querySelectorAll(`[data-group="${group}"]`).forEach((btn) => {
-        btn.classList.toggle("selected", btn.dataset.value === value);
+        const isSelected = btn.dataset.value === value;
+        btn.classList.toggle("selected", isSelected);
+        btn.setAttribute("aria-pressed", isSelected ? "true" : "false");
       });
     }
 
@@ -431,6 +441,10 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("aria-label", `View recipe for ${item.name}`);
+
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,10 +457,20 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+
+        const handleAction = () => {
           trackInteraction("cook", item.id);
-          openRecipeModal(item.id);
+          openRecipeModal(item.id, card);
+        };
+
+        card.addEventListener("click", handleAction);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleAction();
+          }
         });
+
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
       });
@@ -461,7 +485,10 @@
       nextStepBtn.textContent = stepNo >= total ? "Done" : "Next Step";
     }
 
-    async function openRecipeModal(recipeId) {
+    let lastFocusedElement = null;
+
+    async function openRecipeModal(recipeId, triggerElement = null) {
+      lastFocusedElement = triggerElement;
       if (!recipeId) {
         statusText.textContent = "Could not open recipe details for this card.";
         return;
@@ -482,6 +509,7 @@
         currentStepIndex = 0;
         updateModalStep();
         recipeModal.classList.add("open");
+        closeModalBtn.focus();
       } catch (error) {
         statusText.textContent = "Could not load cooking steps right now.";
       }
@@ -489,6 +517,9 @@
 
     function closeRecipeModal() {
       recipeModal.classList.remove("open");
+      if (lastFocusedElement) {
+        lastFocusedElement.focus();
+      }
     }
 
     async function getSuggestions(mode = "normal") {
