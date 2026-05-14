@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import db as _db
-from auth.dependencies import get_current_user
+from auth.dependencies import get_current_user, get_optional_user
 from auth.router import router as auth_router
 from auth.supabase_client import supabase_admin
 
