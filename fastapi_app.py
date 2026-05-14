@@ -1173,7 +1173,6 @@ def recipe_summary(recipe) -> dict:
     }
 
 
-CSV_PATH = Path(__file__).resolve().parent / "recipes.csv"
 INDEX_PATH = Path(__file__).resolve().parent / "index.html"
 interactions = []
 recent_suggestions = []
@@ -1190,20 +1189,16 @@ user_preferences = {
 async def load_recipes_on_startup():
     """
     Startup sequence:
-      1. Init SQLite schema (instant).
-      2. Seed CSV data synchronously so the API is ready immediately.
-      3. Load all recipes into app.state.recipes.
-      4. Kick off TheMealDB seeding as a background task — once done,
-         app.state.recipes is refreshed to include the new recipes.
-    Falls back gracefully to CSV-only if TheMealDB is unreachable.
+      1. Load all recipes from Supabase (persistent — survives Render restarts).
+      2. Seed CSV data if not already present (first deploy only).
+      3. Kick off TheMealDB seeding as a background task — adds new recipes
+         to Supabase and refreshes app.state.recipes when done.
+    Falls back gracefully if TheMealDB is unreachable.
     """
     from seed_mealdb import seed_from_csv, seed_from_mealdb
 
-    _db.init_db()
-
-    # Always re-seed CSV so new rows (added after initial deploy) are picked up.
-    # seed_from_csv uses upsert — safe to call every startup, takes < 1 second.
-    seed_from_csv(force=True)
+    # Seed CSV into Supabase only on first deploy (idempotent, skips if already seeded)
+    seed_from_csv(force=False)
 
     # Serve requests immediately with whatever is in the DB
     app.state.recipes = _db.load_all_recipes()

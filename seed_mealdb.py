@@ -26,11 +26,10 @@ import httpx
 
 from db import (
     count_by_source,
-    get_connection,
     get_existing_external_ids,
     get_max_id,
     init_db,
-    upsert_recipe,
+    upsert_recipes_batch,
 )
 
 CSV_PATH    = Path(__file__).resolve().parent / "recipes.csv"
@@ -187,21 +186,23 @@ def _parse_steps(instructions: str) -> str:
 
 def seed_from_csv(force: bool = False) -> int:
     """
-    Seed recipes.csv into SQLite, preserving original integer IDs (1-50).
+    Seed recipes.csv into Supabase, preserving original integer IDs (1-50).
     Idempotent — skips if CSV records already exist (unless force=True).
     """
     if not force and count_by_source("csv") > 0:
         print(f"[seed] CSV already seeded ({count_by_source('csv')} rows), skipping.")
         return 0
 
-    conn = get_connection()
-    count = 0
+    if not CSV_PATH.exists():
+        print("[seed] recipes.csv not found — skipping CSV seed (data already in Supabase).")
+        return 0
+
+    batch: list[dict] = []
     with CSV_PATH.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            # Strip BOM and stray quotes from headers
             row = {str(k).lstrip("﻿").strip().strip('"'): v for k, v in row.items()}
-            recipe = {
+            batch.append({
                 "id":           int(row["id"]),
                 "name":         row["name"].strip(),
                 "diet":         row["diet"].strip().lower(),
@@ -215,14 +216,11 @@ def seed_from_csv(force: bool = False) -> int:
                 "image_url":    "",
                 "source":       "csv",
                 "external_id":  "",
-            }
-            upsert_recipe(conn, recipe)
-            count += 1
+            })
 
-    conn.commit()
-    conn.close()
-    print(f"[seed] Seeded {count} recipes from CSV.")
-    return count
+    upsert_recipes_batch(batch)
+    print(f"[seed] Seeded {len(batch)} recipes from CSV into Supabase.")
+    return len(batch)
 
 
 # ── MealDB seeder ─────────────────────────────────────────────────────────────
@@ -335,6 +333,7 @@ async def seed_from_mealdb(force: bool = False) -> int:
 
             print(f"[seed]   {filter_type}={value}: {new_count}/{len(basic_meals)} new meals")
 
+            batch: list[dict] = []
             for basic in basic_meals:
                 meal_id = str(basic.get("idMeal", "")).strip()
                 if not meal_id or meal_id in existing_ext_ids:
@@ -357,14 +356,14 @@ async def seed_from_mealdb(force: bool = False) -> int:
                 if recipe is None:
                     continue
 
-                conn = get_connection()
-                upsert_recipe(conn, recipe)
-                conn.commit()
-                conn.close()
-
+                batch.append(recipe)
                 existing_ext_ids.add(meal_id)
                 next_id  += 1
                 inserted += 1
+
+            # Batch upsert the whole category at once (1 API call vs N)
+            if batch:
+                upsert_recipes_batch(batch)
 
     total = count_by_source("mealdb")
     print(f"[seed] TheMealDB done: {inserted} new recipes inserted "
