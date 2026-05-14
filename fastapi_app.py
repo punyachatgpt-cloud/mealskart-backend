@@ -2042,6 +2042,88 @@ class PushSubscribeRequest(BaseModel):
     auth: str
 
 
+# ── AI Chef Chat ──────────────────────────────────────────────────────────────
+
+class AIChatMessage(BaseModel):
+    role: str          # "user" | "ai"
+    text: str = ""
+    thinking: bool = False
+
+class AIChatRequest(BaseModel):
+    message: str
+    history: list[AIChatMessage] = []
+    diet: str = ""
+    category: str = ""
+    ingredients: list[str] = []
+
+
+@app.post("/ai-chat")
+async def ai_chef_chat(payload: AIChatRequest):
+    """
+    Real AI cooking assistant powered by Claude.
+    Returns a natural-language reply and an optional recipe search query.
+    Requires ANTHROPIC_API_KEY environment variable.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "reply": "The AI Chef isn't configured yet — ask the app admin to add the ANTHROPIC_API_KEY. In the meantime I can still find recipes for you!",
+            "recipe_query": payload.message,
+        }
+
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return {"reply": "anthropic package not installed.", "recipe_query": ""}
+
+    prefs: list[str] = []
+    if payload.diet:        prefs.append(f"diet: {payload.diet}")
+    if payload.category:    prefs.append(f"favourite cuisine: {payload.category.replace('-', ' ')}")
+    if payload.ingredients: prefs.append(f"has in fridge: {', '.join(payload.ingredients[:8])}")
+
+    system_prompt = f"""You are Simmer's AI cooking assistant — warm, expert, and concise.
+You specialise in Indian home cooking but know international cuisine too.
+You help with: recipe ideas, cooking techniques, ingredient substitutions, and dietary adaptations.
+{f"User context — {'; '.join(prefs)}." if prefs else ""}
+
+Rules:
+- Reply in 2-4 short sentences. Be specific and practical, never vague.
+- If the user asks for recipe suggestions or ideas, end your reply with exactly:
+  SUGGEST: <short search query>
+  Example: SUGGEST: quick veg north indian dinner under 20 minutes
+- Only add SUGGEST when they explicitly want recipe ideas. Never for technique/substitution questions.
+- Do not repeat "SUGGEST:" more than once."""
+
+    messages: list[dict] = []
+    for msg in payload.history[-8:]:
+        if msg.thinking or not (msg.text or "").strip():
+            continue
+        role = "user" if msg.role == "user" else "assistant"
+        messages.append({"role": role, "content": msg.text.strip()})
+
+    messages.append({"role": "user", "content": payload.message.strip()})
+
+    try:
+        client   = _anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=350,
+            system=system_prompt,
+            messages=messages,
+        )
+        full_text = (response.content[0].text or "").strip()
+    except Exception as exc:
+        return {"reply": f"Oops, couldn't reach the AI Chef right now. ({exc})", "recipe_query": ""}
+
+    recipe_query = ""
+    if "SUGGEST:" in full_text:
+        parts        = full_text.split("SUGGEST:", 1)
+        full_text    = parts[0].strip()
+        recipe_query = parts[1].strip().splitlines()[0].strip()
+
+    return {"reply": full_text, "recipe_query": recipe_query}
+
+
 @app.post("/push/subscribe", status_code=201)
 def push_subscribe(
     payload: PushSubscribeRequest,
