@@ -1197,8 +1197,8 @@ async def load_recipes_on_startup():
     """
     from seed_mealdb import seed_from_csv, seed_from_mealdb
 
-    # Seed CSV into Supabase only on first deploy (idempotent, skips if already seeded)
-    seed_from_csv(force=False)
+    # Always upsert CSV rows so new additions (IDs 61-128) are picked up on each deploy
+    seed_from_csv(force=True)
 
     # Serve requests immediately with whatever is in the DB
     app.state.recipes = _db.load_all_recipes()
