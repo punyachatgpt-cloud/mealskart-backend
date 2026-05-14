@@ -1513,9 +1513,13 @@ def recommend(payload: RecommendRequest, request: Request):
         return []
 
     # Prefer respecting the user's time limit; if too strict, fall back to diet-only.
-    time_filtered_recipes = [r for r in filtered_recipes if int(r["time_minutes"]) <= payload.time_available]
-    if time_filtered_recipes:
-        filtered_recipes = time_filtered_recipes
+    # Skip time filter when ingredients are present — ingredient matching is the primary
+    # constraint, so we should not pre-eliminate recipes before the ingredient step.
+    has_ingredients = bool(payload.ingredients)
+    if not has_ingredients:
+        time_filtered_recipes = [r for r in filtered_recipes if int(r["time_minutes"]) <= payload.time_available]
+        if time_filtered_recipes:
+            filtered_recipes = time_filtered_recipes
 
     # Category guides intent, but falls back gracefully when too narrow.
     if category:
