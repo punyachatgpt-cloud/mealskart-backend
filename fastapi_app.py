@@ -1756,6 +1756,88 @@ def recommend(payload: RecommendRequest, request: Request):
     return selected
 
 
+@app.get("/for-you")
+def for_you_recommendations(
+    liked_ids: str = "",       # comma-separated recipe IDs the user has cooked/saved
+    limit: int = 12,
+    request: Request = None,
+):
+    """
+    Content-based personalised recommendations.
+
+    Derives the user's taste profile from the IDs of recipes they've cooked/saved,
+    then scores the full catalogue by category + tag overlap and returns the
+    top matches (excluding the seed recipes themselves).
+
+    liked_ids — comma-separated integer IDs (e.g. "3,14,27")
+    limit     — max recipes to return (capped at 50)
+    """
+    import random as _rnd
+    recipes = get_loaded_recipes(request)
+    limit = max(1, min(limit, 50))
+
+    # Parse and resolve the seed recipes
+    raw_ids = [s.strip() for s in liked_ids.split(",") if s.strip().isdigit()]
+    seed_ids = {int(x) for x in raw_ids}
+
+    if not seed_ids:
+        # Cold start: return popular shuffle (same as browse default)
+        import datetime as _dt
+        seed = int(_dt.date.today().strftime("%Y%j"))
+        rng  = _rnd.Random(seed)
+        pool = list(recipes)
+        rng.shuffle(pool)
+        return [recipe_summary(r) for r in pool[:limit]]
+
+    seed_recipes = [r for r in recipes if int(r["id"]) in seed_ids]
+
+    # Build preference counters from seed recipes
+    cat_counts: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
+    diet_pref: str | None = None
+    diet_votes: dict[str, int] = {}
+
+    for r in seed_recipes:
+        cat = (r.get("category") or "").lower().strip()
+        if cat:
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        for tag in (r.get("tags") or "").lower().split(","):
+            tag = tag.strip()
+            if tag:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        diet = (r.get("diet") or "").lower().strip()
+        if diet:
+            diet_votes[diet] = diet_votes.get(diet, 0) + 1
+
+    # Majority diet (only enforce if strongly consistent — ≥ 70 % of seeds)
+    if diet_votes:
+        top_diet, top_count = max(diet_votes.items(), key=lambda x: x[1])
+        if top_count / len(seed_recipes) >= 0.7:
+            diet_pref = top_diet
+
+    def score(r: dict) -> float:
+        if int(r["id"]) in seed_ids:
+            return -1.0                         # exclude seed recipes from results
+        s = 0.0
+        cat = (r.get("category") or "").lower().strip()
+        s += cat_counts.get(cat, 0) * 3.0      # category match is worth 3 pts each
+        for tag in (r.get("tags") or "").lower().split(","):
+            tag = tag.strip()
+            s += tag_counts.get(tag, 0) * 1.0  # tag match 1 pt each
+        if diet_pref and (r.get("diet") or "").lower().strip() != diet_pref:
+            s *= 0.4                            # penalise mismatched diet
+        return s
+
+    scored = sorted(recipes, key=score, reverse=True)
+    # Exclude seed IDs and zero-score recipes; fill remainder randomly if needed
+    good    = [r for r in scored if score(r) > 0]
+    filler  = [r for r in scored if score(r) == 0]
+    _rnd.shuffle(filler)
+    result  = (good + filler)[:limit]
+
+    return [recipe_summary(r) for r in result]
+
+
 @app.get("/recipe/{id}")
 def get_recipe(id: int, request: Request):
     recipes = get_loaded_recipes(request)
