@@ -87,6 +87,11 @@
       transform: scale(0.98);
     }
 
+    .choice-btn:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .choice-btn.selected {
       border-color: var(--accent);
       background: var(--accent-soft);
@@ -123,6 +128,11 @@
     .action:disabled {
       opacity: 0.65;
       cursor: not-allowed;
+    }
+
+    .action:focus-visible, .close-btn:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 3px;
     }
 
     .status {
@@ -183,6 +193,11 @@
       color: #0f4c31;
       background: #d5f2e2;
       border: 1px solid #9dd5b8;
+    }
+
+    .card:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
     }
 
     .card h3 {
@@ -284,27 +299,27 @@
     <p class="subtitle">Pick your time, mood, and diet. We will suggest the best 3 dishes.</p>
 
     <section class="panel">
-      <p class="section-label">1. Time</p>
-      <div class="choices" id="timeChoices">
-        <button class="choice-btn selected" data-group="time" data-value="15">15 min</button>
-        <button class="choice-btn" data-group="time" data-value="30">30 min</button>
+      <p class="section-label" id="label-time">1. Time</p>
+      <div class="choices" id="timeChoices" role="group" aria-labelledby="label-time">
+        <button class="choice-btn selected" data-group="time" data-value="15" aria-pressed="true">15 min</button>
+        <button class="choice-btn" data-group="time" data-value="30" aria-pressed="false">30 min</button>
       </div>
     </section>
 
     <section class="panel">
-      <p class="section-label">2. Mood</p>
-      <div class="choices" id="moodChoices">
-        <button class="choice-btn selected" data-group="mood" data-value="quick">quick</button>
-        <button class="choice-btn" data-group="mood" data-value="healthy">healthy</button>
-        <button class="choice-btn" data-group="mood" data-value="comfort">comfort</button>
+      <p class="section-label" id="label-mood">2. Mood</p>
+      <div class="choices" id="moodChoices" role="group" aria-labelledby="label-mood">
+        <button class="choice-btn selected" data-group="mood" data-value="quick" aria-pressed="true">quick</button>
+        <button class="choice-btn" data-group="mood" data-value="healthy" aria-pressed="false">healthy</button>
+        <button class="choice-btn" data-group="mood" data-value="comfort" aria-pressed="false">comfort</button>
       </div>
     </section>
 
     <section class="panel">
-      <p class="section-label">3. Diet</p>
-      <div class="choices" id="dietChoices">
-        <button class="choice-btn selected" data-group="diet" data-value="veg">veg</button>
-        <button class="choice-btn" data-group="diet" data-value="non-veg">non-veg</button>
+      <p class="section-label" id="label-diet">3. Diet</p>
+      <div class="choices" id="dietChoices" role="group" aria-labelledby="label-diet">
+        <button class="choice-btn selected" data-group="diet" data-value="veg" aria-pressed="true">veg</button>
+        <button class="choice-btn" data-group="diet" data-value="non-veg" aria-pressed="false">non-veg</button>
       </div>
     </section>
 
@@ -361,6 +376,7 @@
     const closeModalBtn = document.getElementById("closeModalBtn");
 
     let modalSteps = [];
+    let lastFocusedElement = null;
     let currentStepIndex = 0;
     const LAST_MODE_KEY = "foodai_last_mode";
 
@@ -393,7 +409,9 @@
 
     function setSelected(group, value) {
       document.querySelectorAll(`[data-group="${group}"]`).forEach((btn) => {
-        btn.classList.toggle("selected", btn.dataset.value === value);
+        const isSelected = btn.dataset.value === value;
+        btn.classList.toggle("selected", isSelected);
+        btn.setAttribute("aria-pressed", isSelected ? "true" : "false");
       });
     }
 
@@ -431,6 +449,9 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", `View recipe for ${item.name}`);
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,9 +464,16 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const triggerModal = () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        };
+        card.addEventListener("click", triggerModal);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            triggerModal();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
@@ -467,6 +495,8 @@
         return;
       }
 
+      lastFocusedElement = document.activeElement;
+
       try {
         const response = await fetch(apiUrl(`/recipe/${recipeId}`), {
           method: "GET",
@@ -482,6 +512,7 @@
         currentStepIndex = 0;
         updateModalStep();
         recipeModal.classList.add("open");
+        closeModalBtn.focus();
       } catch (error) {
         statusText.textContent = "Could not load cooking steps right now.";
       }
@@ -489,6 +520,9 @@
 
     function closeRecipeModal() {
       recipeModal.classList.remove("open");
+      if (lastFocusedElement) {
+        lastFocusedElement.focus();
+      }
     }
 
     async function getSuggestions(mode = "normal") {
