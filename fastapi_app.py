@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+import httpx
+
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -2057,31 +2059,13 @@ class AIChatRequest(BaseModel):
     ingredients: list[str] = []
 
 
-@app.post("/ai-chat")
-async def ai_chef_chat(payload: AIChatRequest):
-    """
-    Real AI cooking assistant powered by Claude.
-    Returns a natural-language reply and an optional recipe search query.
-    Requires ANTHROPIC_API_KEY environment variable.
-    """
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        return {
-            "reply": "The AI Chef isn't configured yet — ask the app admin to add the ANTHROPIC_API_KEY. In the meantime I can still find recipes for you!",
-            "recipe_query": payload.message,
-        }
-
-    try:
-        import anthropic as _anthropic
-    except ImportError:
-        return {"reply": "anthropic package not installed.", "recipe_query": ""}
-
+def _build_chef_system_prompt(payload: "AIChatRequest") -> str:
     prefs: list[str] = []
     if payload.diet:        prefs.append(f"diet: {payload.diet}")
     if payload.category:    prefs.append(f"favourite cuisine: {payload.category.replace('-', ' ')}")
     if payload.ingredients: prefs.append(f"has in fridge: {', '.join(payload.ingredients[:8])}")
 
-    system_prompt = f"""You are Simmer's AI cooking assistant — warm, expert, and concise.
+    return f"""You are Simmer's AI cooking assistant — warm, expert, and concise.
 You specialise in Indian home cooking but know international cuisine too.
 You help with: recipe ideas, cooking techniques, ingredient substitutions, and dietary adaptations.
 {f"User context — {'; '.join(prefs)}." if prefs else ""}
@@ -2094,34 +2078,97 @@ Rules:
 - Only add SUGGEST when they explicitly want recipe ideas. Never for technique/substitution questions.
 - Do not repeat "SUGGEST:" more than once."""
 
+
+def _parse_chef_reply(full_text: str) -> tuple[str, str]:
+    recipe_query = ""
+    if "SUGGEST:" in full_text:
+        parts        = full_text.split("SUGGEST:", 1)
+        full_text    = parts[0].strip()
+        recipe_query = parts[1].strip().splitlines()[0].strip()
+    return full_text, recipe_query
+
+
+async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], user_msg: str) -> str:
+    """Call Gemini 1.5 Flash via REST API (free tier, no extra package needed)."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+
+    # Build Gemini contents array — interleave history then final user turn
+    contents: list[dict] = []
+    for m in messages[:-1]:  # history without the final user message
+        role = "user" if m["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": m["content"]}]})
+    contents.append({"role": "user", "parts": [{"text": user_msg}]})
+
+    body = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": 350, "temperature": 0.7},
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+@app.post("/ai-chat")
+async def ai_chef_chat(payload: AIChatRequest):
+    """
+    AI cooking assistant — supports Anthropic Claude (ANTHROPIC_API_KEY)
+    or Google Gemini Flash (GEMINI_API_KEY) as a free alternative.
+    Returns a natural-language reply and an optional recipe search query.
+    """
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    gemini_key    = os.getenv("GEMINI_API_KEY", "").strip()
+
+    if not anthropic_key and not gemini_key:
+        return {
+            "reply": (
+                "The AI Chef needs an API key to work. "
+                "Add ANTHROPIC_API_KEY or GEMINI_API_KEY to your Render environment variables. "
+                "Get a free Gemini key at aistudio.google.com/app/apikey — no credit card needed!"
+            ),
+            "recipe_query": payload.message,
+        }
+
+    system_prompt = _build_chef_system_prompt(payload)
+
     messages: list[dict] = []
     for msg in payload.history[-8:]:
         if msg.thinking or not (msg.text or "").strip():
             continue
         role = "user" if msg.role == "user" else "assistant"
         messages.append({"role": role, "content": msg.text.strip()})
-
     messages.append({"role": "user", "content": payload.message.strip()})
 
+    # ── Anthropic path ────────────────────────────────────────────────────────
+    if anthropic_key:
+        try:
+            import anthropic as _anthropic
+            client   = _anthropic.Anthropic(api_key=anthropic_key)
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=350,
+                system=system_prompt,
+                messages=messages,
+            )
+            full_text = (response.content[0].text or "").strip()
+        except Exception as exc:
+            return {"reply": f"Oops, couldn't reach the AI Chef right now. ({exc})", "recipe_query": ""}
+
+        reply, recipe_query = _parse_chef_reply(full_text)
+        return {"reply": reply, "recipe_query": recipe_query}
+
+    # ── Gemini path ───────────────────────────────────────────────────────────
     try:
-        client   = _anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=350,
-            system=system_prompt,
-            messages=messages,
-        )
-        full_text = (response.content[0].text or "").strip()
+        full_text = await _call_gemini(gemini_key, system_prompt, messages, payload.message.strip())
     except Exception as exc:
         return {"reply": f"Oops, couldn't reach the AI Chef right now. ({exc})", "recipe_query": ""}
 
-    recipe_query = ""
-    if "SUGGEST:" in full_text:
-        parts        = full_text.split("SUGGEST:", 1)
-        full_text    = parts[0].strip()
-        recipe_query = parts[1].strip().splitlines()[0].strip()
-
-    return {"reply": full_text, "recipe_query": recipe_query}
+    reply, recipe_query = _parse_chef_reply(full_text)
+    return {"reply": reply, "recipe_query": recipe_query}
 
 
 @app.post("/push/subscribe", status_code=201)
