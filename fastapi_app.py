@@ -1832,3 +1832,105 @@ def unsave_recipe(recipe_id: int, user: dict = Depends(get_current_user)):
         {"user_id": user["id"], "recipe_id": recipe_id}
     ).execute()
     return {"removed": True, "recipe_id": recipe_id}
+
+
+# ── Web Push notifications ────────────────────────────────────────────────────
+
+import json as _json
+from concurrent.futures import ThreadPoolExecutor as _TPE
+
+_VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
+_VAPID_CLAIMS      = {"sub": "mailto:punyachatgpt@gmail.com"}
+_PUSH_SECRET       = os.getenv("PUSH_SECRET", "")   # shared secret for /push/send
+_push_executor     = _TPE(max_workers=4)
+
+_DAILY_MESSAGES = [
+    ("🍳 What's cooking tonight?",       "Your personalised picks are ready. Tap to see."),
+    ("🌅 Start the week deliciously",    "Fresh recipe ideas are waiting for you."),
+    ("🍛 Tonight's dinner sorted",       "Check your personalised picks on Simmer."),
+    ("🥘 Mid-week meal inspiration",     "Don't let dinner be boring — see today's picks."),
+    ("🍳 Almost the weekend!",           "Treat yourself to something great tonight."),
+    ("🎉 Friday feast time",             "Your weekend cooking starts here."),
+    ("☀️ Sunday special",               "Make something memorable today."),
+]
+
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+
+
+@app.post("/push/subscribe", status_code=201)
+def push_subscribe(
+    payload: PushSubscribeRequest,
+    user: dict | None = Depends(get_optional_user),
+):
+    """Store a Web Push subscription. Works for anonymous and logged-in users."""
+    row = {
+        "endpoint": payload.endpoint,
+        "p256dh":   payload.p256dh,
+        "auth":     payload.auth,
+        "user_id":  user["id"] if user else None,
+    }
+    supabase_admin.table("push_subscriptions").upsert(
+        row, on_conflict="endpoint"
+    ).execute()
+    return {"subscribed": True}
+
+
+@app.post("/push/send")
+async def push_send(request: Request):
+    """Send daily notification to all subscribers. Called by external cron."""
+    secret = request.headers.get("x-push-secret", "")
+    if not _PUSH_SECRET or secret != _PUSH_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not _VAPID_PRIVATE_KEY:
+        raise HTTPException(status_code=500, detail="VAPID key not configured")
+
+    day   = datetime.now(timezone.utc).weekday()   # 0=Mon … 6=Sun
+    title, body = _DAILY_MESSAGES[day % len(_DAILY_MESSAGES)]
+
+    result = supabase_admin.table("push_subscriptions").select("*").execute()
+    subs   = result.data or []
+
+    sent = failed = 0
+    stale_endpoints: list[str] = []
+
+    def _send_one(sub: dict) -> tuple[bool, bool]:
+        from pywebpush import webpush, WebPushException
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub["endpoint"],
+                    "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+                },
+                data=_json.dumps({"title": title, "body": body, "url": "/"}),
+                vapid_private_key=_VAPID_PRIVATE_KEY,
+                vapid_claims=_VAPID_CLAIMS,
+            )
+            return True, False
+        except WebPushException as exc:
+            if exc.response and exc.response.status_code in (404, 410):
+                return False, True   # stale subscription
+            return False, False
+
+    loop = asyncio.get_event_loop()
+    futures = [loop.run_in_executor(_push_executor, _send_one, s) for s in subs]
+    results = await asyncio.gather(*futures, return_exceptions=True)
+
+    for sub, res in zip(subs, results):
+        if isinstance(res, Exception):
+            failed += 1
+        elif res[0]:
+            sent += 1
+        else:
+            failed += 1
+            if res[1]:
+                stale_endpoints.append(sub["endpoint"])
+
+    # Clean up stale subscriptions
+    for ep in stale_endpoints:
+        supabase_admin.table("push_subscriptions").delete().eq("endpoint", ep).execute()
+
+    return {"sent": sent, "failed": failed, "stale_removed": len(stale_endpoints)}
