@@ -1093,8 +1093,8 @@ def build_reason(tags: list[str], time_minutes: int, time_available: int) -> str
     if "comfort" in tags:
         parts.append("🍲 Comfort food.")
 
-    if time_minutes <= time_available:
-        parts.append(f"Ready in under {time_available} mins.")
+    if time_minutes <= time_available and time_available < 999:
+        parts.append(f"Ready in {time_minutes} mins.")
 
     reason = " ".join(parts).strip()
     return reason if reason else "A good match for your preferences."
