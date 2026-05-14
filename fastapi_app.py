@@ -7,13 +7,15 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import db as _db
+from auth.dependencies import get_current_user
 from auth.router import router as auth_router
+from auth.supabase_client import supabase_admin
 
 load_dotenv()
 
@@ -30,7 +32,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allow_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -1790,3 +1792,48 @@ def track_interaction(payload: TrackRequest, request: Request):
 @app.get("/interactions")
 def get_interactions():
     return interactions
+
+
+# ── Saved recipes (Supabase-backed, auth-required) ────────────────────────────
+
+class SaveRecipeRequest(BaseModel):
+    recipe_id: int
+    recipe_data: dict
+
+
+@app.get("/saved")
+def list_saved(user: dict = Depends(get_current_user)):
+    """Return all saved recipes for the authenticated user, newest first."""
+    result = (
+        supabase_admin
+        .table("saved_recipes")
+        .select("recipe_id, recipe_data, saved_at")
+        .eq("user_id", user["id"])
+        .order("saved_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+@app.post("/saved", status_code=201)
+def save_recipe(payload: SaveRecipeRequest, user: dict = Depends(get_current_user)):
+    """Save a recipe for the authenticated user (upsert)."""
+    supabase_admin.table("saved_recipes").upsert(
+        {
+            "user_id": user["id"],
+            "recipe_id": payload.recipe_id,
+            "recipe_data": payload.recipe_data,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        },
+        on_conflict="user_id,recipe_id",
+    ).execute()
+    return {"saved": True, "recipe_id": payload.recipe_id}
+
+
+@app.delete("/saved/{recipe_id}", status_code=200)
+def unsave_recipe(recipe_id: int, user: dict = Depends(get_current_user)):
+    """Remove a saved recipe for the authenticated user."""
+    supabase_admin.table("saved_recipes").delete().match(
+        {"user_id": user["id"], "recipe_id": recipe_id}
+    ).execute()
+    return {"removed": True, "recipe_id": recipe_id}
