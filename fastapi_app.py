@@ -1285,10 +1285,85 @@ _DIET_KEYWORD_MAP: dict[str, str] = {
 }
 
 
+@app.get("/browse")
+def browse_recipes(
+    diet: str = "",
+    category: str = "",
+    max_time: int = 0,
+    max_cal: int = 0,
+    sort: str = "popular",   # popular | quick | healthy | calories
+    limit: int = 24,
+    offset: int = 0,
+    request: Request = None,
+):
+    """
+    Browse all recipes with optional filters — no text query needed.
+    Use for the Browse sheet, cuisine pages, diet pages, etc.
+
+    Filters (all optional, combinable):
+      diet      — veg | non-veg
+      category  — north-indian | south-indian | continental | chinese | snacks | other
+      max_time  — maximum cooking time in minutes (0 = no limit)
+      max_cal   — maximum calories (0 = no limit)
+
+    Sort:
+      popular   — shuffle with slight preference for lower id (seeded by day)
+      quick     — time_minutes asc
+      healthy   — calories asc
+      calories  — calories desc
+    """
+    import random as _random
+    recipes = get_loaded_recipes(request)
+
+    diet_f     = (diet     or "").strip().lower()
+    category_f = normalize_category(category or "")
+    max_time_f = max(0, max_time)
+    max_cal_f  = max(0, max_cal)
+
+    pool = []
+    for r in recipes:
+        if diet_f and r.get("diet", "").lower() != diet_f:
+            continue
+        if category_f and category_f != "all":
+            if r.get("category", "").lower() != category_f:
+                continue
+        if max_time_f and (r.get("time_minutes") or 999) > max_time_f:
+            continue
+        if max_cal_f and (r.get("calories") or 999) > max_cal_f:
+            continue
+        pool.append(r)
+
+    if sort == "quick":
+        pool.sort(key=lambda r: (r.get("time_minutes") or 999, r["name"]))
+    elif sort == "healthy":
+        pool.sort(key=lambda r: (r.get("calories") or 999, r["name"]))
+    elif sort == "calories":
+        pool.sort(key=lambda r: (-(r.get("calories") or 0), r["name"]))
+    else:
+        # "popular" — deterministic daily shuffle so each user gets the same order
+        import datetime as _dt
+        seed = int(_dt.date.today().strftime("%Y%j"))
+        rng  = _random.Random(seed)
+        rng.shuffle(pool)
+
+    limit  = max(1, min(limit, 100))
+    offset = max(0, offset)
+    page   = pool[offset: offset + limit]
+    total  = len(pool)
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content=[recipe_summary(r) for r in page],
+        headers={"X-Total-Count": str(total)},
+    )
+
+
 @app.get("/search")
 def search_recipes(
     q: str,
-    diet: str = "",        # kept for autocomplete backward-compat, NOT used for text queries
+    diet: str = "",
+    category: str = "",
+    max_time: int = 0,
     limit: int = 24,
     offset: int = 0,
     request: Request = None,
@@ -1384,10 +1459,34 @@ def search_recipes(
     # Sort: relevance desc, then name asc for stable ordering
     scored.sort(key=lambda x: (-x[0], x[1]["name"]))
 
+    # ── Post-filter by optional sidebar filters ───────────────────────────────
+    diet_f     = (diet     or "").strip().lower()
+    category_f = normalize_category(category or "")
+    max_time_f = max(0, max_time)
+
+    if diet_f or (category_f and category_f != "all") or max_time_f:
+        filtered = []
+        for score, r in scored:
+            if diet_f and r.get("diet", "").lower() != diet_f:
+                continue
+            if category_f and category_f != "all":
+                if r.get("category", "").lower() != category_f:
+                    continue
+            if max_time_f and (r.get("time_minutes") or 999) > max_time_f:
+                continue
+            filtered.append((score, r))
+        scored = filtered
+
     limit   = max(1, min(limit, 100))
     offset  = max(0, offset)
+    total   = len(scored)
     page    = scored[offset: offset + limit]
-    return [recipe_summary(r) for _, r in page]
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content=[recipe_summary(r) for _, r in page],
+        headers={"X-Total-Count": str(total)},
+    )
 
 
 @app.post("/recommend")
