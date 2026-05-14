@@ -35,21 +35,8 @@ from db import (
 CSV_PATH    = Path(__file__).resolve().parent / "recipes.csv"
 MEALDB_BASE = "https://www.themealdb.com/api/json/v1/1"
 
-# ── What to fetch ────────────────────────────────────────────────────────────
-# Category-based fetch (strCategory)
-FETCH_CATEGORIES = [
-    "Chicken", "Seafood", "Beef", "Lamb", "Pork",
-    "Vegetarian", "Vegan", "Pasta", "Breakfast", "Side", "Starter", "Miscellaneous",
-]
-# Area-based fetch (strArea) — gives authentic regional recipes
-# TheMealDB endpoint: filter.php?a=Chinese  (same shape as category filter)
-# Note: not all areas have meals on the free API — verified working list below
-FETCH_AREAS = [
-    "Chinese", "Japanese", "Mexican", "Italian",
-    "American", "British", "Thai", "Moroccan",
-    "French", "Greek", "Spanish", "Canadian",
-]
-MAX_PER_CATEGORY = 20   # max meals fetched per category/area
+# Alphabetical fetch covers all ~300 TheMealDB free-tier recipes in 26 requests.
+# The old FETCH_CATEGORIES / FETCH_AREAS / MAX_PER_CATEGORY approach is replaced.
 
 # ── Lookup tables ─────────────────────────────────────────────────────────────
 
@@ -272,87 +259,78 @@ def _meal_to_recipe(meal: dict, hint_category: str, hint_area: str, simmer_id: i
     }
 
 
-async def _fetch_meal_list(client: httpx.AsyncClient, filter_type: str, value: str) -> list[dict]:
-    """Fetch meal list by category (c=) or area (a=), limited to MAX_PER_CATEGORY."""
-    param = "c" if filter_type == "category" else "a"
+
+async def _fetch_by_letter(client: httpx.AsyncClient, letter: str) -> list[dict]:
+    """
+    Fetch all full meal objects starting with `letter` using search.php?f=.
+    Returns complete meal objects — no second lookup needed.
+    """
     for attempt in range(3):
         try:
             resp = await client.get(
-                f"{MEALDB_BASE}/filter.php?{param}={value}",
-                timeout=httpx.Timeout(45.0),   # area lists can be large
+                f"{MEALDB_BASE}/search.php?f={letter}",
+                timeout=httpx.Timeout(45.0),
             )
             resp.raise_for_status()
-            return (resp.json().get("meals") or [])[:MAX_PER_CATEGORY]
+            return resp.json().get("meals") or []
         except httpx.TimeoutException:
             if attempt < 2:
-                await asyncio.sleep(2 ** attempt)  # backoff: 1s, 2s
+                await asyncio.sleep(2 ** attempt)
                 continue
-            print(f"[seed]   TIMEOUT {filter_type}={value} after 3 attempts, skipping.")
+            print(f"[seed]   TIMEOUT letter={letter} after 3 attempts, skipping.")
             return []
         except Exception as exc:
-            print(f"[seed]   ERROR {filter_type}={value}: {exc}")
+            print(f"[seed]   ERROR letter={letter}: {exc}")
             return []
     return []
 
 
 async def seed_from_mealdb(force: bool = False) -> int:
     """
-    Async: fetch recipes from TheMealDB public API and insert into SQLite.
-    Pulls from both categories AND geographic areas for wide variety.
+    Fetch every recipe in TheMealDB using the alphabetical search endpoint
+    (search.php?f=a … ?f=z). Each letter request returns full meal objects
+    with all details — no secondary lookup needed. This gives ~300 recipes
+    in just 26 API calls, vs the old category/area approach of 400+ calls.
+
     MealDB recipes receive integer IDs starting at 1001.
     Idempotent — skips already-imported meals unless force=True.
     """
     existing_ext_ids: set[str] = set() if force else get_existing_external_ids()
-    next_id   = max(get_max_id(), 1000) + 1
-    inserted  = 0
+    next_id  = max(get_max_id(), 1000) + 1
+    inserted = 0
 
-    # Build a combined fetch plan: (filter_type, value, hint_category, hint_area)
-    fetch_plan: list[tuple[str, str, str, str]] = []
-    for cat in FETCH_CATEGORIES:
-        fetch_plan.append(("category", cat, cat, "Unknown"))
-    for area in FETCH_AREAS:
-        fetch_plan.append(("area", area, "Miscellaneous", area))
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    print(f"[seed] TheMealDB: fetching all recipes via a-z alphabetical search "
+          f"({len(existing_ext_ids)} already seeded)...")
 
-    print(f"[seed] TheMealDB: {len(fetch_plan)} fetch groups "
-          f"({len(FETCH_CATEGORIES)} categories + {len(FETCH_AREAS)} areas), "
-          f"max {MAX_PER_CATEGORY} each...")
-
-    async with httpx.AsyncClient(timeout=httpx.Timeout(25.0)) as client:
-        for filter_type, value, hint_cat, hint_area in fetch_plan:
-            basic_meals = await _fetch_meal_list(client, filter_type, value)
-            if not basic_meals:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(45.0)) as client:
+        for letter in letters:
+            meals = await _fetch_by_letter(client, letter)
+            if not meals:
+                await asyncio.sleep(0.3)
                 continue
 
-            new_count = sum(
-                1 for b in basic_meals
-                if str(b.get("idMeal", "")).strip() not in existing_ext_ids
-            )
-            if new_count == 0:
-                print(f"[seed]   {filter_type}={value}: all {len(basic_meals)} already seeded")
+            new_meals = [m for m in meals
+                         if str(m.get("idMeal", "")).strip() not in existing_ext_ids]
+
+            if not new_meals:
+                print(f"[seed]   {letter}: {len(meals)} meals, all already seeded")
+                await asyncio.sleep(0.2)
                 continue
 
-            print(f"[seed]   {filter_type}={value}: {new_count}/{len(basic_meals)} new meals")
+            print(f"[seed]   {letter}: {len(new_meals)} new / {len(meals)} total")
 
             batch: list[dict] = []
-            for basic in basic_meals:
-                meal_id = str(basic.get("idMeal", "")).strip()
-                if not meal_id or meal_id in existing_ext_ids:
+            for meal in new_meals:
+                meal_id = str(meal.get("idMeal", "")).strip()
+                if not meal_id:
                     continue
 
-                await asyncio.sleep(0.08)   # gentle rate limit (~12 req/s)
+                # Use the meal's own category/area — more accurate than filter hints
+                real_cat  = (meal.get("strCategory") or "Miscellaneous").strip()
+                real_area = (meal.get("strArea")     or "Unknown").strip()
 
-                try:
-                    r2 = await client.get(f"{MEALDB_BASE}/lookup.php?i={meal_id}")
-                    r2.raise_for_status()
-                    details_list = r2.json().get("meals") or []
-                    if not details_list:
-                        continue
-                    meal_detail = details_list[0]
-                except Exception as exc:
-                    print(f"[seed]     SKIP meal {meal_id}: {exc}")
-                    continue
-
-                recipe = _meal_to_recipe(meal_detail, hint_cat, hint_area, next_id)
+                recipe = _meal_to_recipe(meal, real_cat, real_area, next_id)
                 if recipe is None:
                     continue
 
@@ -361,9 +339,10 @@ async def seed_from_mealdb(force: bool = False) -> int:
                 next_id  += 1
                 inserted += 1
 
-            # Batch upsert the whole category at once (1 API call vs N)
             if batch:
                 upsert_recipes_batch(batch)
+
+            await asyncio.sleep(0.3)   # stay well within free-tier rate limits
 
     total = count_by_source("mealdb")
     print(f"[seed] TheMealDB done: {inserted} new recipes inserted "
