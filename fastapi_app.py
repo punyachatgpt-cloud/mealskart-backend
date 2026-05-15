@@ -2096,12 +2096,12 @@ def _parse_chef_reply(full_text: str) -> tuple[str, str]:
 
 
 async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], user_msg: str) -> str:
-    """Call Gemini via REST API (free tier, no extra package needed). Model is controlled by GEMINI_MODEL env var."""
+    """Call Gemini via REST API with exponential backoff for 429 rate limits."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{_GEMINI_MODEL}:generateContent?key={api_key}"
 
     # Build Gemini contents array — interleave history then final user turn
     contents: list[dict] = []
-    for m in messages[:-1]:  # history without the final user message
+    for m in messages[:-1]:
         role = "user" if m["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": m["content"]}]})
     contents.append({"role": "user", "parts": [{"text": user_msg}]})
@@ -2112,12 +2112,23 @@ async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], u
         "generationConfig": {"maxOutputTokens": 350, "temperature": 0.7},
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(url, json=body)
-        resp.raise_for_status()
-        data = resp.json()
+    # Retry up to 4 times with exponential backoff on 429
+    max_retries = 4
+    backoff = 5  # seconds — doubles each retry: 5, 10, 20, 40
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        for attempt in range(max_retries):
+            resp = await client.post(url, json=body)
+            if resp.status_code == 429:
+                wait = backoff * (2 ** attempt)
+                print(f"[Gemini] 429 rate-limited — retry {attempt + 1}/{max_retries} in {wait}s")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(wait)
+                    continue
+            resp.raise_for_status()
+            data = resp.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    raise httpx.HTTPStatusError("Gemini rate limit exceeded after retries", request=resp.request, response=resp)
 
 
 @app.post("/ai-chat")
