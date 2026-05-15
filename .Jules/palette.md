@@ -1,0 +1,3 @@
+## 2026-05-15 - [A11y/UX] Keyboard Accessibility & Focus Management
+**Learning:** Purely mouse-driven custom elements (like `div` cards) and modals without focus management are significant accessibility barriers. Users relying on keyboard or screen readers get "trapped" or "lost" when focus is not explicitly managed during state transitions (like opening/closing modals).
+**Action:** Always add `role="button"`, `tabindex="0"`, and keydown listeners to interactive non-button elements. Implement focus trapping for modals: move focus to the primary action on open, and return it to the trigger on close.
