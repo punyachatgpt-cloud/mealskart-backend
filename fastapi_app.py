@@ -2095,11 +2095,13 @@ def _parse_chef_reply(full_text: str) -> tuple[str, str]:
     return full_text, recipe_query
 
 
+class GeminiRateLimitError(Exception):
+    """Raised when Gemini returns 429 after all retries."""
+
 async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], user_msg: str) -> str:
-    """Call Gemini via REST API with exponential backoff for 429 rate limits."""
+    """Call Gemini via REST API with retry on 429 rate limits."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{_GEMINI_MODEL}:generateContent?key={api_key}"
 
-    # Build Gemini contents array — interleave history then final user turn
     contents: list[dict] = []
     for m in messages[:-1]:
         role = "user" if m["role"] == "user" else "model"
@@ -2112,23 +2114,21 @@ async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], u
         "generationConfig": {"maxOutputTokens": 350, "temperature": 0.7},
     }
 
-    # Retry up to 4 times with exponential backoff on 429
-    max_retries = 4
-    backoff = 5  # seconds — doubles each retry: 5, 10, 20, 40
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        for attempt in range(max_retries):
+    # 3 attempts: immediate → wait 4s → wait 8s
+    waits = [0, 4, 8]
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for attempt, wait in enumerate(waits):
+            if wait:
+                print(f"[Gemini] 429 rate-limited — retry {attempt}/{len(waits)-1} after {wait}s")
+                await asyncio.sleep(wait)
             resp = await client.post(url, json=body)
             if resp.status_code == 429:
-                wait = backoff * (2 ** attempt)
-                print(f"[Gemini] 429 rate-limited — retry {attempt + 1}/{max_retries} in {wait}s")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(wait)
-                    continue
+                continue
             resp.raise_for_status()
             data = resp.json()
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    raise httpx.HTTPStatusError("Gemini rate limit exceeded after retries", request=resp.request, response=resp)
+    raise GeminiRateLimitError("rate_limit")
 
 
 @app.post("/ai-chat")
@@ -2173,8 +2173,8 @@ async def ai_chef_chat(payload: AIChatRequest):
                 messages=messages,
             )
             full_text = (response.content[0].text or "").strip()
-        except Exception as exc:
-            return {"reply": f"Oops, couldn't reach the AI Chef right now. ({exc})", "recipe_query": ""}
+        except Exception:
+            return {"reply": "The AI Chef is unavailable right now. Please try again shortly. 🍳", "recipe_query": ""}
 
         reply, recipe_query = _parse_chef_reply(full_text)
         return {"reply": reply, "recipe_query": recipe_query}
@@ -2182,8 +2182,10 @@ async def ai_chef_chat(payload: AIChatRequest):
     # ── Gemini path ───────────────────────────────────────────────────────────
     try:
         full_text = await _call_gemini(gemini_key, system_prompt, messages, payload.message.strip())
-    except Exception as exc:
-        return {"reply": f"Oops, couldn't reach the AI Chef right now. ({exc})", "recipe_query": ""}
+    except GeminiRateLimitError:
+        return {"reply": "The kitchen is a little busy right now — please try again in a moment 🍳", "recipe_query": ""}
+    except Exception:
+        return {"reply": "The AI Chef is unavailable right now. Please try again shortly. 🍳", "recipe_query": ""}
 
     reply, recipe_query = _parse_chef_reply(full_text)
     return {"reply": reply, "recipe_query": recipe_query}
