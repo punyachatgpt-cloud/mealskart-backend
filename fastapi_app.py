@@ -2096,12 +2096,33 @@ def _parse_chef_reply(full_text: str) -> tuple[str, str]:
 
 
 class GeminiRateLimitError(Exception):
-    """Raised when Gemini returns 429 after all retries."""
+    """Raised when Gemini returns 429 after all retries across all fallback models."""
+
+# Fallback chain: primary model first, then lighter alternatives
+_GEMINI_FALLBACK_MODELS = [
+    _GEMINI_MODEL,          # configured model (default: gemini-2.0-flash)
+    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash",
+]
+
+async def _call_gemini_model(client: "httpx.AsyncClient", api_key: str, model: str, body: dict) -> str:
+    """Try one model with up to 3 attempts on 429. Returns text or raises."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    waits = [0, 4, 8]
+    for attempt, wait in enumerate(waits):
+        if wait:
+            print(f"[Gemini/{model}] 429 — retry {attempt}/{len(waits)-1} after {wait}s")
+            await asyncio.sleep(wait)
+        resp = await client.post(url, json=body)
+        if resp.status_code == 429:
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    raise GeminiRateLimitError(f"rate_limit:{model}")
 
 async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], user_msg: str) -> str:
-    """Call Gemini via REST API with retry on 429 rate limits."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_GEMINI_MODEL}:generateContent?key={api_key}"
-
+    """Call Gemini with automatic model fallback if quota is exhausted."""
     contents: list[dict] = []
     for m in messages[:-1]:
         role = "user" if m["role"] == "user" else "model"
@@ -2114,21 +2135,25 @@ async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], u
         "generationConfig": {"maxOutputTokens": 350, "temperature": 0.7},
     }
 
-    # 3 attempts: immediate → wait 4s → wait 8s
-    waits = [0, 4, 8]
+    tried = set()
     async with httpx.AsyncClient(timeout=30.0) as client:
-        for attempt, wait in enumerate(waits):
-            if wait:
-                print(f"[Gemini] 429 rate-limited — retry {attempt}/{len(waits)-1} after {wait}s")
-                await asyncio.sleep(wait)
-            resp = await client.post(url, json=body)
-            if resp.status_code == 429:
+        for model in _GEMINI_FALLBACK_MODELS:
+            if model in tried:
                 continue
-            resp.raise_for_status()
-            data = resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            tried.add(model)
+            try:
+                text = await _call_gemini_model(client, api_key, model, body)
+                if model != _GEMINI_MODEL:
+                    print(f"[Gemini] Used fallback model: {model}")
+                return text
+            except GeminiRateLimitError:
+                print(f"[Gemini] Model {model} quota exhausted, trying next fallback…")
+                continue
+            except Exception as exc:
+                print(f"[Gemini] Model {model} error: {exc}")
+                continue
 
-    raise GeminiRateLimitError("rate_limit")
+    raise GeminiRateLimitError("all_models_exhausted")
 
 
 @app.post("/ai-chat")
