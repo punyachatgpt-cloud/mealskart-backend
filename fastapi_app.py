@@ -21,6 +21,9 @@ from auth.supabase_client import supabase_admin
 
 load_dotenv()
 
+_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
+print(f"[Gemini] Active model: {os.getenv('GEMINI_MODEL') or 'gemini-1.5-flash-latest (default)'}")
+
 app = FastAPI(title="Recipe Recommender API")
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -2093,8 +2096,8 @@ def _parse_chef_reply(full_text: str) -> tuple[str, str]:
 
 
 async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], user_msg: str) -> str:
-    """Call Gemini 1.5 Flash via REST API (free tier, no extra package needed)."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    """Call Gemini via REST API (free tier, no extra package needed). Model is controlled by GEMINI_MODEL env var."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_GEMINI_MODEL}:generateContent?key={api_key}"
 
     # Build Gemini contents array — interleave history then final user turn
     contents: list[dict] = []
