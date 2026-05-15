@@ -21,8 +21,8 @@ from auth.supabase_client import supabase_admin
 
 load_dotenv()
 
-_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest")
-print(f"[Gemini] Active model: {os.getenv('GEMINI_MODEL') or 'gemini-1.5-flash-latest (default)'}")
+_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+print(f"[Gemini] Active model: {_GEMINI_MODEL}")
 
 app = FastAPI(title="Recipe Recommender API")
 
