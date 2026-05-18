@@ -1273,6 +1273,21 @@ _CATEGORY_KEYWORD_MAP: dict[str, str] = {
     "appetizers": "snacks",
     "salad": "salad",
     "salads": "salad",
+    # International cuisines mapped to nearest available category
+    "thai": "continental",
+    "japanese": "continental",
+    "korean": "continental",
+    "vietnamese": "continental",
+    "mexican": "continental",
+    "italian": "continental",
+    "french": "continental",
+    "mediterranean": "continental",
+    "asian": "chinese",
+    "indo chinese": "chinese",
+    "indo-chinese": "chinese",
+    "manchurian": "chinese",
+    "noodles": "chinese",
+    "fried rice": "chinese",
 }
 
 # Maps user-typed diet terms to internal diet values
@@ -1405,8 +1420,19 @@ def search_recipes(
     words = [w for w in q_lower.split() if w]
 
     # ── Detect special intent keywords ────────────────────────────────────────
+    # Check full query first, then individual words (e.g. "thai dish" → "thai" → continental)
     target_category = _CATEGORY_KEYWORD_MAP.get(q_lower)
-    target_diet     = _DIET_KEYWORD_MAP.get(q_lower)
+    if not target_category:
+        for w in words:
+            if w in _CATEGORY_KEYWORD_MAP:
+                target_category = _CATEGORY_KEYWORD_MAP[w]
+                break
+    target_diet = _DIET_KEYWORD_MAP.get(q_lower)
+    if not target_diet:
+        for w in words:
+            if w in _DIET_KEYWORD_MAP:
+                target_diet = _DIET_KEYWORD_MAP[w]
+                break
 
     scored: list[tuple[int, dict]] = []
 
@@ -2079,11 +2105,21 @@ You specialise in Indian home cooking but know international cuisine too.
 You help with: recipe ideas, cooking techniques, ingredient substitutions, and dietary adaptations.
 {f"User context — {'; '.join(prefs)}." if prefs else ""}
 
+Available recipe categories in the app: north-indian, south-indian, continental, chinese, snacks, sweets, drinks, salad.
+International cuisine mapping guide (use these when generating SUGGEST queries):
+- Thai, Japanese, Korean, Vietnamese → use "continental" or key ingredients like "noodles", "stir fry", "coconut"
+- Mexican, Italian, French, Mediterranean → use "continental"
+- Chinese, Indo-Chinese → use "chinese"
+
 Rules:
 - Reply in 2-4 short sentences. Be specific and practical, never vague.
 - If the user asks for recipe suggestions or ideas, end your reply with exactly:
   SUGGEST: <short search query>
   Example: SUGGEST: quick veg north indian dinner under 20 minutes
+  Example: SUGGEST: spicy chicken continental
+  Example: SUGGEST: paneer with coconut curry
+- The SUGGEST query must use ingredients, dish names, or categories from the available list above.
+- If user asks for a cuisine not in the database (thai, mexican, etc.), map it to the nearest category and suggest similar dishes.
 - Only add SUGGEST when they explicitly want recipe ideas. Never for technique/substitution questions.
 - Do not repeat "SUGGEST:" more than once."""
 
