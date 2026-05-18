@@ -2098,6 +2098,9 @@ def _parse_chef_reply(full_text: str) -> tuple[str, str]:
 class GeminiRateLimitError(Exception):
     """Raised when Gemini returns 429 after all retries across all fallback models."""
 
+class GeminiConfigError(Exception):
+    """Raised when Gemini returns a non-retryable error (bad key, bad model, etc.)."""
+
 # Fallback chain: primary model first, then lighter alternatives
 _GEMINI_FALLBACK_MODELS = [
     _GEMINI_MODEL,          # configured model (default: gemini-2.0-flash)
@@ -2114,8 +2117,18 @@ async def _call_gemini_model(client: "httpx.AsyncClient", api_key: str, model: s
             print(f"[Gemini/{model}] 429 — retry {attempt}/{len(waits)-1} after {wait}s")
             await asyncio.sleep(wait)
         resp = await client.post(url, json=body)
+        print(f"[Gemini/{model}] status={resp.status_code}")
         if resp.status_code == 429:
             continue
+        # 4xx errors (401 bad key, 403 forbidden, 404 bad model) are not retryable
+        if 400 <= resp.status_code < 500:
+            err_body = ""
+            try:
+                err_body = resp.json().get("error", {}).get("message", "")
+            except Exception:
+                pass
+            print(f"[Gemini/{model}] non-retryable {resp.status_code}: {err_body}")
+            raise GeminiConfigError(f"{resp.status_code}:{model}")
         resp.raise_for_status()
         data = resp.json()
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -2136,6 +2149,7 @@ async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], u
     }
 
     tried = set()
+    config_errors = 0
     async with httpx.AsyncClient(timeout=30.0) as client:
         for model in _GEMINI_FALLBACK_MODELS:
             if model in tried:
@@ -2149,10 +2163,20 @@ async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], u
             except GeminiRateLimitError:
                 print(f"[Gemini] Model {model} quota exhausted, trying next fallback…")
                 continue
+            except GeminiConfigError as exc:
+                config_errors += 1
+                print(f"[Gemini] Config error on {model}: {exc}")
+                # 401/403 = bad key — no point trying other models with same key
+                if "401:" in str(exc) or "403:" in str(exc):
+                    raise
+                # 404 = bad model name — try next model
+                continue
             except Exception as exc:
-                print(f"[Gemini] Model {model} error: {exc}")
+                print(f"[Gemini] Unexpected error on {model}: {type(exc).__name__}: {exc}")
                 continue
 
+    if config_errors == len(tried):
+        raise GeminiConfigError("all_models_failed_config")
     raise GeminiRateLimitError("all_models_exhausted")
 
 
@@ -2207,6 +2231,8 @@ async def ai_chef_chat(payload: AIChatRequest):
     # ── Gemini path ───────────────────────────────────────────────────────────
     try:
         full_text = await _call_gemini(gemini_key, system_prompt, messages, payload.message.strip())
+    except GeminiConfigError:
+        return {"reply": "The AI Chef couldn't connect — please check your GEMINI_API_KEY in Render environment variables. 🔑", "recipe_query": ""}
     except GeminiRateLimitError:
         return {"reply": "The kitchen is a little busy right now — please try again in a moment 🍳", "recipe_query": ""}
     except Exception:
