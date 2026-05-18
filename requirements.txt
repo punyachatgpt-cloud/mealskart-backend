@@ -12,3 +12,6 @@ pywebpush>=2.0.0              # Web Push / VAPID signing
 
 # ── AI Chef ───────────────────────────────────────────────────────────────────
 anthropic>=0.40.0             # Claude API — AI Chef chat endpoint
+
+# ── Text-to-Speech ────────────────────────────────────────────────────────────
+gTTS>=2.5.1                   # Google TTS — natural multilingual voice for Cook Genie

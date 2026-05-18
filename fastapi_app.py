@@ -2325,6 +2325,74 @@ async def ai_chef_chat(payload: AIChatRequest):
     return {"reply": "The AI Chef is unavailable right now. Please try again shortly. 🍳", "recipe_query": ""}
 
 
+# ── Text-to-Speech ─────────────────────────────────────────────────────────────
+# gTTS wraps Google's neural TTS — sounds like a real human voice.
+# Supports 30+ languages including Hindi, Tamil, Spanish, French, etc.
+_TTS_LANG_MAP: dict[str, tuple[str, str]] = {
+    # code    → (gTTS lang, gTTS tld)   tld changes the accent
+    "en":     ("en", "com"),        # English US
+    "en-gb":  ("en", "co.uk"),      # English UK
+    "en-au":  ("en", "com.au"),     # English Australian
+    "en-in":  ("en", "co.in"),      # English Indian accent
+    "hi":     ("hi", "com"),        # Hindi
+    "ta":     ("ta", "com"),        # Tamil
+    "te":     ("te", "com"),        # Telugu
+    "bn":     ("bn", "com"),        # Bengali
+    "mr":     ("mr", "com"),        # Marathi
+    "gu":     ("gu", "com"),        # Gujarati
+    "pa":     ("pa", "com"),        # Punjabi
+    "kn":     ("kn", "com"),        # Kannada
+    "ml":     ("ml", "com"),        # Malayalam
+    "es":     ("es", "com"),        # Spanish
+    "fr":     ("fr", "com"),        # French
+    "de":     ("de", "com"),        # German
+    "ar":     ("ar", "com"),        # Arabic
+    "ja":     ("ja", "com"),        # Japanese
+    "ko":     ("ko", "com"),        # Korean
+    "zh":     ("zh-CN", "com"),     # Chinese (Mandarin)
+    "pt":     ("pt", "com"),        # Portuguese
+    "ru":     ("ru", "com"),        # Russian
+    "it":     ("it", "com"),        # Italian
+}
+
+@app.get("/tts")
+async def text_to_speech(text: str = "", lang: str = "en"):
+    """
+    Convert text to natural-sounding speech via Google TTS.
+    Returns MP3 audio. Used by the Cook Genie in Cook Mode.
+    """
+    import io
+    try:
+        from gtts import gTTS
+    except ImportError:
+        raise HTTPException(503, "TTS service not available — install gTTS")
+
+    text = text.strip()[:500]
+    if not text:
+        raise HTTPException(400, "text parameter is required")
+
+    gtts_lang, tld = _TTS_LANG_MAP.get(lang.lower(), ("en", "com"))
+
+    try:
+        buf = io.BytesIO()
+        tts = gTTS(text=text, lang=gtts_lang, tld=tld, slow=False)
+        tts.write_to_fp(buf)
+        buf.seek(0)
+    except Exception as exc:
+        print(f"[TTS] gTTS error: {exc}")
+        raise HTTPException(500, "TTS generation failed")
+
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        buf,
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Content-Disposition": "inline",
+        },
+    )
+
+
 @app.post("/push/subscribe", status_code=201)
 def push_subscribe(
     payload: PushSubscribeRequest,
