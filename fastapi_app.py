@@ -1240,38 +1240,6 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/debug-gemini")
-async def debug_gemini():
-    """Test Gemini connectivity and return detailed diagnostics. Remove after debugging."""
-    import httpx
-    key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not key:
-        return {"error": "GEMINI_API_KEY not set in environment"}
-
-    results = {}
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash"]
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for model in models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-            body = {
-                "contents": [{"role": "user", "parts": [{"text": "Say hi"}]}],
-                "generationConfig": {"maxOutputTokens": 10}
-            }
-            try:
-                resp = await client.post(url, json=body)
-                if resp.status_code == 200:
-                    results[model] = "✅ OK"
-                else:
-                    try:
-                        err = resp.json().get("error", {}).get("message", resp.text[:120])
-                    except Exception:
-                        err = resp.text[:120]
-                    results[model] = f"❌ {resp.status_code}: {err}"
-            except Exception as exc:
-                results[model] = f"❌ exception: {type(exc).__name__}: {str(exc)[:80]}"
-
-    key_preview = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else "too_short"
-    return {"key_preview": key_preview, "model_results": results}
 
 
 # Maps user-typed terms to internal category slugs
@@ -2214,6 +2182,38 @@ async def _call_gemini(api_key: str, system_prompt: str, messages: list[dict], u
     raise GeminiRateLimitError("all_models_exhausted")
 
 
+# ── Groq (OpenAI-compatible, free tier) ───────────────────────────────────────
+_GROQ_MODEL = "llama-3.3-70b-versatile"
+_GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+async def _call_groq(api_key: str, system_prompt: str, messages: list[dict], user_msg: str) -> str:
+    """Call Groq's OpenAI-compatible API. Returns the assistant reply text."""
+    oai_messages = [{"role": "system", "content": system_prompt}]
+    for m in messages[:-1]:          # history (last item is the current user msg)
+        oai_messages.append({"role": m["role"], "content": m["content"]})
+    oai_messages.append({"role": "user", "content": user_msg})
+
+    body = {
+        "model": _GROQ_MODEL,
+        "messages": oai_messages,
+        "max_tokens": 350,
+        "temperature": 0.7,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(_GROQ_API_URL, json=body, headers=headers)
+        if resp.status_code == 429:
+            raise GeminiRateLimitError("groq_rate_limit")
+        if resp.status_code != 200:
+            print(f"[Groq] Error {resp.status_code}: {resp.text[:200]}")
+            raise GeminiConfigError(f"groq_{resp.status_code}")
+        data = resp.json()
+        return data["choices"][0]["message"]["content"].strip()
+
+
 @app.post("/ai-chat")
 async def ai_chef_chat(payload: AIChatRequest):
     """
@@ -2222,14 +2222,15 @@ async def ai_chef_chat(payload: AIChatRequest):
     Returns a natural-language reply and an optional recipe search query.
     """
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    groq_key      = os.getenv("GROQ_API_KEY", "").strip()
     gemini_key    = os.getenv("GEMINI_API_KEY", "").strip()
 
-    if not anthropic_key and not gemini_key:
+    if not anthropic_key and not groq_key and not gemini_key:
         return {
             "reply": (
                 "The AI Chef needs an API key to work. "
-                "Add ANTHROPIC_API_KEY or GEMINI_API_KEY to your Render environment variables. "
-                "Get a free Gemini key at aistudio.google.com/app/apikey — no credit card needed!"
+                "Add GROQ_API_KEY to your Render environment variables — "
+                "it's completely free at console.groq.com (no credit card needed)!"
             ),
             "recipe_query": payload.message,
         }
@@ -2256,24 +2257,36 @@ async def ai_chef_chat(payload: AIChatRequest):
                 messages=messages,
             )
             full_text = (response.content[0].text or "").strip()
+            reply, recipe_query = _parse_chef_reply(full_text)
+            return {"reply": reply, "recipe_query": recipe_query}
         except Exception:
-            return {"reply": "The AI Chef is unavailable right now. Please try again shortly. 🍳", "recipe_query": ""}
+            pass  # fall through to next provider
 
-        reply, recipe_query = _parse_chef_reply(full_text)
-        return {"reply": reply, "recipe_query": recipe_query}
+    # ── Groq path (free, llama-3.3-70b) ──────────────────────────────────────
+    if groq_key:
+        try:
+            full_text = await _call_groq(groq_key, system_prompt, messages, payload.message.strip())
+            reply, recipe_query = _parse_chef_reply(full_text)
+            return {"reply": reply, "recipe_query": recipe_query}
+        except GeminiRateLimitError:
+            return {"reply": "The kitchen is a little busy right now — please try again in a moment 🍳", "recipe_query": ""}
+        except Exception:
+            pass  # fall through to Gemini
 
     # ── Gemini path ───────────────────────────────────────────────────────────
-    try:
-        full_text = await _call_gemini(gemini_key, system_prompt, messages, payload.message.strip())
-    except GeminiConfigError:
-        return {"reply": "The AI Chef couldn't connect — please check your GEMINI_API_KEY in Render environment variables. 🔑", "recipe_query": ""}
-    except GeminiRateLimitError:
-        return {"reply": "The kitchen is a little busy right now — please try again in a moment 🍳", "recipe_query": ""}
-    except Exception:
-        return {"reply": "The AI Chef is unavailable right now. Please try again shortly. 🍳", "recipe_query": ""}
+    if gemini_key:
+        try:
+            full_text = await _call_gemini(gemini_key, system_prompt, messages, payload.message.strip())
+            reply, recipe_query = _parse_chef_reply(full_text)
+            return {"reply": reply, "recipe_query": recipe_query}
+        except GeminiConfigError:
+            return {"reply": "The AI Chef couldn't connect — please check your API key in Render environment variables. 🔑", "recipe_query": ""}
+        except GeminiRateLimitError:
+            return {"reply": "The kitchen is a little busy right now — please try again in a moment 🍳", "recipe_query": ""}
+        except Exception:
+            pass
 
-    reply, recipe_query = _parse_chef_reply(full_text)
-    return {"reply": reply, "recipe_query": recipe_query}
+    return {"reply": "The AI Chef is unavailable right now. Please try again shortly. 🍳", "recipe_query": ""}
 
 
 @app.post("/push/subscribe", status_code=201)
