@@ -2315,3 +2315,66 @@ async def push_send(request: Request):
         supabase_admin.table("push_subscriptions").delete().eq("endpoint", ep).execute()
 
     return {"sent": sent, "failed": failed, "stale_removed": len(stale_endpoints)}
+
+
+@app.post("/push/weekly-recap")
+async def push_weekly_recap(request: Request):
+    """Send weekly recap push every Sunday evening. Called by external cron."""
+    secret = request.headers.get("x-push-secret", "")
+    if not _PUSH_SECRET or secret != _PUSH_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not _VAPID_PRIVATE_KEY:
+        raise HTTPException(status_code=500, detail="VAPID key not configured")
+
+    # Pick a rotating weekly recap message
+    week_num = datetime.now(timezone.utc).isocalendar()[1]
+    weekly_messages = [
+        ("📊 How was your week in the kitchen?", "See your cooking recap — streak, top dishes, and fresh picks for next week."),
+        ("🔥 Weekly wrap-up is ready!", "Check your meals cooked, streak, and personalised picks for the week ahead."),
+        ("🍳 Your week on Simmer", "Recipes cooked, streak update, and new ideas waiting for you."),
+        ("🌟 End-of-week cooking recap", "Your personalised weekly summary is ready — tap to see how you did."),
+    ]
+    title, body = weekly_messages[week_num % len(weekly_messages)]
+
+    result = supabase_admin.table("push_subscriptions").select("*").execute()
+    subs = result.data or []
+
+    sent = failed = 0
+    stale_endpoints: list[str] = []
+
+    def _send_weekly(sub: dict) -> tuple[bool, bool]:
+        from pywebpush import webpush, WebPushException
+        try:
+            webpush(
+                subscription_info={
+                    "endpoint": sub["endpoint"],
+                    "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+                },
+                data=_json.dumps({"title": title, "body": body, "url": "/"}),
+                vapid_private_key=_VAPID_PRIVATE_KEY,
+                vapid_claims=_VAPID_CLAIMS,
+            )
+            return True, False
+        except WebPushException as exc:
+            if exc.response and exc.response.status_code in (404, 410):
+                return False, True
+            return False, False
+
+    loop = asyncio.get_event_loop()
+    futures = [loop.run_in_executor(_push_executor, _send_weekly, s) for s in subs]
+    results = await asyncio.gather(*futures, return_exceptions=True)
+
+    for sub, res in zip(subs, results):
+        if isinstance(res, Exception):
+            failed += 1
+        elif res[0]:
+            sent += 1
+        else:
+            failed += 1
+            if res[1]:
+                stale_endpoints.append(sub["endpoint"])
+
+    for ep in stale_endpoints:
+        supabase_admin.table("push_subscriptions").delete().eq("endpoint", ep).execute()
+
+    return {"sent": sent, "failed": failed, "stale_removed": len(stale_endpoints), "message": title}
