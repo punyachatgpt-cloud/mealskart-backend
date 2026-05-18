@@ -1240,6 +1240,40 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/debug-gemini")
+async def debug_gemini():
+    """Test Gemini connectivity and return detailed diagnostics. Remove after debugging."""
+    import httpx
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not key:
+        return {"error": "GEMINI_API_KEY not set in environment"}
+
+    results = {}
+    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash"]
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+            body = {
+                "contents": [{"role": "user", "parts": [{"text": "Say hi"}]}],
+                "generationConfig": {"maxOutputTokens": 10}
+            }
+            try:
+                resp = await client.post(url, json=body)
+                if resp.status_code == 200:
+                    results[model] = "✅ OK"
+                else:
+                    try:
+                        err = resp.json().get("error", {}).get("message", resp.text[:120])
+                    except Exception:
+                        err = resp.text[:120]
+                    results[model] = f"❌ {resp.status_code}: {err}"
+            except Exception as exc:
+                results[model] = f"❌ exception: {type(exc).__name__}: {str(exc)[:80]}"
+
+    key_preview = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else "too_short"
+    return {"key_preview": key_preview, "model_results": results}
+
+
 # Maps user-typed terms to internal category slugs
 _CATEGORY_KEYWORD_MAP: dict[str, str] = {
     "north indian": "north-indian",
