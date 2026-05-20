@@ -87,6 +87,14 @@
       transform: scale(0.98);
     }
 
+    .choice-btn:focus-visible,
+    .action:focus-visible,
+    .card:focus-visible,
+    .close-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .choice-btn.selected {
       border-color: var(--accent);
       background: var(--accent-soft);
@@ -312,7 +320,7 @@
       <button class="action" id="suggestBtn">Get Suggestion</button>
       <button class="action secondary" id="decideBtn">Decide For Me</button>
     </section>
-    <p class="status" id="statusText"></p>
+    <p class="status" id="statusText" aria-live="polite"></p>
     <p class="ready-text" id="readyText">Your quick meal is ready</p>
     <p class="tap-hint" id="tapHint">Tap a dish to start cooking</p>
 
@@ -393,7 +401,9 @@
 
     function setSelected(group, value) {
       document.querySelectorAll(`[data-group="${group}"]`).forEach((btn) => {
-        btn.classList.toggle("selected", btn.dataset.value === value);
+        const isSelected = btn.dataset.value === value;
+        btn.classList.toggle("selected", isSelected);
+        btn.setAttribute("aria-pressed", isSelected);
       });
     }
 
@@ -431,6 +441,9 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("aria-label", `Recipe: ${item.name}`);
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,15 +456,24 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const openModal = () => {
           trackInteraction("cook", item.id);
-          openRecipeModal(item.id);
+          openRecipeModal(item.id, card);
+        };
+        card.addEventListener("click", openModal);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openModal();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
       });
       tapHint.style.display = "block";
     }
+
+    let lastActiveElement = null;
 
     function updateModalStep() {
       const stepNo = currentStepIndex + 1;
@@ -461,7 +483,7 @@
       nextStepBtn.textContent = stepNo >= total ? "Done" : "Next Step";
     }
 
-    async function openRecipeModal(recipeId) {
+    async function openRecipeModal(recipeId, triggerElement) {
       if (!recipeId) {
         statusText.textContent = "Could not open recipe details for this card.";
         return;
@@ -481,7 +503,9 @@
         modalSteps = Array.isArray(recipe.steps) ? recipe.steps : [];
         currentStepIndex = 0;
         updateModalStep();
+        lastActiveElement = triggerElement;
         recipeModal.classList.add("open");
+        closeModalBtn.focus();
       } catch (error) {
         statusText.textContent = "Could not load cooking steps right now.";
       }
@@ -489,6 +513,10 @@
 
     function closeRecipeModal() {
       recipeModal.classList.remove("open");
+      if (lastActiveElement) {
+        lastActiveElement.focus();
+        lastActiveElement = null;
+      }
     }
 
     async function getSuggestions(mode = "normal") {
@@ -542,7 +570,16 @@
         closeRecipeModal();
       }
     });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && recipeModal.classList.contains("open")) {
+        closeRecipeModal();
+      }
+    });
     bindChoiceButtons();
+    // Set initial aria-pressed states
+    setSelected("time", String(state.time_available));
+    setSelected("mood", state.mood);
+    setSelected("diet", state.diet);
     getSuggestions(getInitialMode());
   </script>
 </body>
