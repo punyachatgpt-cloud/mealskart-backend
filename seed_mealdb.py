@@ -58,23 +58,28 @@ AREA_DIET_DEFAULT: dict[str, str] = {
 }
 
 # TheMealDB category → Simmer category (overridden by area when available)
+# Beef/Lamb/Seafood from MealDB are overwhelmingly Western/continental dishes,
+# not Indian. Vegetarian/Vegan/Side are diet/role labels, not cuisines → "other".
 CATEGORY_MAP: dict[str, str] = {
     "Chicken":    "continental",
-    "Beef":       "north-indian",
-    "Seafood":    "south-indian",
-    "Lamb":       "north-indian",
+    "Beef":       "continental",   # was "north-indian" — MealDB beef is mostly Western
+    "Seafood":    "continental",   # was "south-indian" — MealDB seafood is mostly Western
+    "Lamb":       "continental",   # was "north-indian" — MealDB lamb is mostly European
     "Pork":       "continental",
-    "Goat":       "north-indian",
+    "Goat":       "north-indian",  # MealDB goat is mostly Indian curries — keep
     "Pasta":      "continental",
-    "Vegetarian": "north-indian",
-    "Vegan":      "north-indian",
-    "Side":       "north-indian",
+    "Vegetarian": "other",         # was "north-indian" — not a cuisine label
+    "Vegan":      "other",         # was "north-indian" — not a cuisine label
+    "Side":       "other",         # was "north-indian" — generic side dishes
     "Breakfast":  "continental",
     "Starter":    "snacks",
     "Dessert":    "continental",
 }
 
 # TheMealDB area → Simmer category (more specific than category)
+# Moroccan/Egyptian/Tunisian/Kenyan = North African/African → continental (not north-indian)
+# Malaysian/Vietnamese/Filipino = Southeast Asian → continental (not chinese)
+# Turkish = Middle Eastern/Mediterranean → continental (not north-indian)
 AREA_MAP: dict[str, str] = {
     "Indian":     "north-indian",
     "Chinese":    "chinese",
@@ -86,22 +91,58 @@ AREA_MAP: dict[str, str] = {
     "Japanese":   "continental",
     "Mexican":    "continental",
     "Greek":      "continental",
-    "Moroccan":   "north-indian",
-    "Egyptian":   "north-indian",
+    "Moroccan":   "continental",   # was "north-indian" — North African cuisine
+    "Egyptian":   "continental",   # was "north-indian" — North African cuisine
     "Spanish":    "continental",
     "Portuguese": "continental",
     "Croatian":   "continental",
     "Jamaican":   "continental",
-    "Malaysian":  "chinese",
-    "Vietnamese": "chinese",
-    "Filipino":   "chinese",
+    "Malaysian":  "continental",   # was "chinese" — distinct Southeast Asian cuisine
+    "Vietnamese": "continental",   # was "chinese" — distinct Southeast Asian cuisine
+    "Filipino":   "continental",   # was "chinese" — distinct Southeast Asian cuisine
     "Canadian":   "continental",
     "Russian":    "continental",
-    "Turkish":    "north-indian",
-    "Kenyan":     "north-indian",
-    "Tunisian":   "north-indian",
+    "Turkish":    "continental",   # was "north-indian" — Mediterranean/Middle Eastern
+    "Kenyan":     "continental",   # was "north-indian" — East African cuisine
+    "Tunisian":   "continental",   # was "north-indian" — North African cuisine
     "Unknown":    "other",
 }
+
+# ── Difficulty estimation ─────────────────────────────────────────────────────
+
+# Keywords that indicate a non-trivial cooking technique.
+_HARD_TECHNIQUES: frozenset[str] = frozenset({
+    "marinate", "deglaze", "knead", "fold in", "fold the",
+    "caramelize", "caramelise", "reduce until", "blanch", "julienne",
+    "flambe", "baste", "saute", "braise", "braising",
+    "clarify", "emulsify", "render the", "deep-fry", "deep fry",
+    "tempering", "proof the", "proofing", "whisk until stiff",
+    "butterfly", "truss", "debone", "score the",
+})
+
+
+def _calc_difficulty(steps_text: str, time_min: int) -> str:
+    """
+    Estimate recipe difficulty from step count, hard technique keywords,
+    and estimated cooking time.
+
+    easy   → ≤4 steps, no hard techniques, ≤20 min
+    hard   → ≥9 steps OR ≥3 hard techniques OR ≥50 min
+    medium → everything else
+    """
+    if not steps_text:
+        return "medium"
+    steps = [s.strip() for s in steps_text.split(";") if s.strip()]
+    n = len(steps)
+    combined = steps_text.lower()
+    hard_count = sum(1 for t in _HARD_TECHNIQUES if t in combined)
+
+    if n <= 4 and hard_count == 0 and time_min <= 20:
+        return "easy"
+    if n >= 9 or hard_count >= 3 or time_min >= 50:
+        return "hard"
+    return "medium"
+
 
 TIME_EST: dict[str, int] = {
     "Chicken": 25, "Beef": 35, "Seafood": 20, "Lamb": 35, "Pork": 30, "Goat": 35,
@@ -241,6 +282,7 @@ def _meal_to_recipe(meal: dict, hint_category: str, hint_area: str, simmer_id: i
 
     # MealDB thumbnail — append /preview for a smaller (300px) version
     thumb = (meal.get("strMealThumb") or "").strip()
+    steps = _parse_steps(meal.get("strInstructions", ""))
 
     return {
         "id":           simmer_id,
@@ -248,11 +290,11 @@ def _meal_to_recipe(meal: dict, hint_category: str, hint_area: str, simmer_id: i
         "diet":         diet,
         "time_minutes": time_min,
         "calories":     calories,
-        "difficulty":   "medium",
+        "difficulty":   _calc_difficulty(steps, time_min),
         "category":     sim_cat,
         "tags":         tags,
         "ingredients":  _parse_ingredients(meal),
-        "steps":        _parse_steps(meal.get("strInstructions", "")),
+        "steps":        steps,
         "image_url":    thumb,
         "source":       "mealdb",
         "external_id":  str(meal.get("idMeal", "")),
@@ -348,6 +390,92 @@ async def seed_from_mealdb(force: bool = False) -> int:
     print(f"[seed] TheMealDB done: {inserted} new recipes inserted "
           f"(total MealDB in DB: {total}).")
     return inserted
+
+
+# ── CSV image backfill ────────────────────────────────────────────────────────
+
+async def backfill_csv_images() -> int:
+    """
+    For every CSV-seeded recipe that has no image_url, search TheMealDB by
+    the recipe's name and store the thumbnail URL in Supabase.
+
+    Uses search.php?s=<name> — free, no API key required.
+    Runs once per deploy (skips rows that already have an image_url).
+    Returns the number of images successfully backfilled.
+    """
+    from db import supabase_admin  # local import to avoid circular
+
+    # Fetch CSV rows that are still missing an image
+    try:
+        result = (
+            supabase_admin.table("recipes")
+            .select("id, name, image_url")
+            .eq("source", "csv")
+            .limit(500)
+            .execute()
+        )
+        rows = result.data or []
+    except Exception as exc:
+        print(f"[backfill] Could not load CSV recipes: {exc}")
+        return 0
+
+    missing = [r for r in rows if not (r.get("image_url") or "").strip()]
+    if not missing:
+        print("[backfill] All CSV recipes already have images — nothing to do.")
+        return 0
+
+    print(f"[backfill] Backfilling images for {len(missing)} CSV recipes...")
+    filled = 0
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+        for row in missing:
+            name = (row.get("name") or "").strip()
+            if not name:
+                continue
+
+            # TheMealDB name search — take the first hit's thumbnail
+            thumb = await _mealdb_search_thumb(client, name)
+            if not thumb:
+                # Try with first two words only (e.g. "Butter Chicken" → "Butter")
+                short = " ".join(name.split()[:2])
+                if short != name:
+                    thumb = await _mealdb_search_thumb(client, short)
+
+            if thumb:
+                try:
+                    supabase_admin.table("recipes") \
+                        .update({"image_url": thumb}) \
+                        .eq("id", row["id"]) \
+                        .execute()
+                    filled += 1
+                except Exception as exc:
+                    print(f"[backfill]   update failed for id={row['id']}: {exc}")
+
+            await asyncio.sleep(0.25)  # stay within free-tier rate limits
+
+    print(f"[backfill] Done — {filled}/{len(missing)} CSV recipes now have images.")
+    return filled
+
+
+async def _mealdb_search_thumb(client: httpx.AsyncClient, name: str) -> str:
+    """
+    Search TheMealDB by name and return the first result's thumbnail URL,
+    or empty string if nothing found.
+    """
+    try:
+        resp = await client.get(
+            f"{MEALDB_BASE}/search.php",
+            params={"s": name},
+            timeout=httpx.Timeout(15.0),
+        )
+        resp.raise_for_status()
+        meals = resp.json().get("meals") or []
+        if meals:
+            thumb = (meals[0].get("strMealThumb") or "").strip()
+            return thumb
+    except Exception as exc:
+        print(f"[backfill]   search failed for '{name}': {exc}")
+    return ""
 
 
 # ── Combined entry point ──────────────────────────────────────────────────────

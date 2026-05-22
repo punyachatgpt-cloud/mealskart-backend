@@ -1159,8 +1159,54 @@ def get_recipe_enrichment(recipe) -> dict:
     }
 
 
+# ── Difficulty helper (runtime) ───────────────────────────────────────────────
+# Mirrors seed_mealdb._calc_difficulty so that existing DB records (seeded with
+# "difficulty": "medium" before the fix) return the correct value without a
+# full DB migration.
+
+_HARD_TECHNIQUES: frozenset[str] = frozenset({
+    "marinate", "deglaze", "knead", "fold in", "fold the",
+    "caramelize", "caramelise", "reduce until", "blanch", "julienne",
+    "flambe", "baste", "saute", "braise", "braising",
+    "clarify", "emulsify", "render the", "deep-fry", "deep fry",
+    "tempering", "proof the", "proofing", "whisk until stiff",
+    "butterfly", "truss", "debone", "score the",
+})
+
+
+def _calc_difficulty(steps_text: str, time_min: int) -> str:
+    """
+    Estimate recipe difficulty from step count, hard technique keywords,
+    and estimated cooking time.
+
+    easy   → ≤4 steps, no hard techniques, ≤20 min
+    hard   → ≥9 steps OR ≥3 hard techniques OR ≥50 min
+    medium → everything else
+    """
+    if not steps_text:
+        return "medium"
+    steps = [s.strip() for s in steps_text.split(";") if s.strip()]
+    n = len(steps)
+    combined = steps_text.lower()
+    hard_count = sum(1 for t in _HARD_TECHNIQUES if t in combined)
+    if n <= 4 and hard_count == 0 and time_min <= 20:
+        return "easy"
+    if n >= 9 or hard_count >= 3 or time_min >= 50:
+        return "hard"
+    return "medium"
+
+
 def recipe_summary(recipe) -> dict:
     enrichment = get_recipe_enrichment(recipe)
+    # For MealDB records seeded before the difficulty fix, compute on the fly
+    # so the API always returns an accurate value without a DB migration.
+    if recipe.get("source") == "mealdb":
+        difficulty = _calc_difficulty(
+            recipe.get("steps", ""),
+            recipe.get("time_minutes", 25),
+        )
+    else:
+        difficulty = recipe["difficulty"]
     return {
         "id": int(recipe["id"]),
         "name": recipe["name"],
@@ -1168,7 +1214,7 @@ def recipe_summary(recipe) -> dict:
         "calories": recipe["calories"],
         "servings": enrichment["servings"],
         "nutrition": enrichment["nutrition"],
-        "difficulty": recipe["difficulty"],
+        "difficulty": difficulty,
         "diet": recipe["diet"],
         "tags": recipe["tags"],
         "category": recipe.get("category", "other"),
@@ -1179,9 +1225,9 @@ def recipe_summary(recipe) -> dict:
 
 
 INDEX_PATH = Path(__file__).resolve().parent / "index.html"
-interactions = []
-recent_suggestions = []
-user_preferences = {
+interactions: list[dict] = []
+recent_suggestions: list = []
+user_preferences: dict[str, int] = {
     "quick": 0, "healthy": 0, "comfort": 0,
     "veg": 0, "non-veg": 0,
     # cuisine categories — boosted when user cooks from them
@@ -1190,26 +1236,65 @@ user_preferences = {
 }
 
 
+def _rebuild_preferences_from_interactions(recipes: list[dict]) -> None:
+    """
+    Recompute user_preferences by replaying the in-memory interactions list.
+    Called at startup after loading persisted interactions from Supabase.
+    """
+    # Reset all counts
+    for key in list(user_preferences.keys()):
+        user_preferences[key] = 0
+
+    recipe_map = {int(r["id"]): r for r in recipes}
+
+    for event in interactions:
+        if event.get("action") != "cook":
+            continue
+        tracked_id = parse_tracked_recipe_id(event.get("recipe_id"))
+        if tracked_id is None:
+            continue
+        recipe = recipe_map.get(tracked_id)
+        if recipe is None:
+            continue
+        for tag in recipe.get("tags", []):
+            if tag in user_preferences:
+                user_preferences[tag] += 1
+        diet = (recipe.get("diet") or "").strip().lower()
+        if diet in user_preferences:
+            user_preferences[diet] += 1
+        cat = (recipe.get("category") or "").strip().lower()
+        if cat in user_preferences:
+            user_preferences[cat] += 1
+
+
 @app.on_event("startup")
 async def load_recipes_on_startup():
     """
     Startup sequence:
-      1. Load all recipes from Supabase (persistent — survives Render restarts).
-      2. Seed CSV data if not already present (first deploy only).
-      3. Kick off TheMealDB seeding as a background task — adds new recipes
-         to Supabase and refreshes app.state.recipes when done.
-    Falls back gracefully if TheMealDB is unreachable.
+      1. Seed CSV data (idempotent, fast).
+      2. Load all recipes from Supabase into app.state.recipes.
+      3. Load persisted interactions from Supabase, rebuild user_preferences.
+      4. Run one-time DB migrations in background (difficulty + category fixes).
+      5. Kick off TheMealDB seeding as a background task.
+    Falls back gracefully if Supabase / TheMealDB is unreachable.
     """
-    from seed_mealdb import seed_from_csv, seed_from_mealdb
+    from seed_mealdb import seed_from_csv, seed_from_mealdb, backfill_csv_images
 
-    # Always upsert CSV rows so new additions (IDs 61-128) are picked up on each deploy
+    # Always upsert CSV rows so new additions are picked up on each deploy
     seed_from_csv(force=True)
 
     # Serve requests immediately with whatever is in the DB
     app.state.recipes = _db.load_all_recipes()
     print(f"[startup] Loaded {len(app.state.recipes)} recipes from DB.")
 
-    # Enrich with TheMealDB data in the background (non-blocking)
+    # ── Restore personalisation state from Supabase ───────────────────────────
+    persisted = _db.load_recent_interactions(500)
+    if persisted:
+        interactions.extend(persisted)
+        _rebuild_preferences_from_interactions(app.state.recipes)
+        print(f"[startup] Restored {len(persisted)} interactions from Supabase.")
+
+    # ── Background tasks (non-blocking) ──────────────────────────────────────
     async def _bg_mealdb_seed():
         try:
             added = await seed_from_mealdb()
@@ -1219,10 +1304,36 @@ async def load_recipes_on_startup():
         except Exception as exc:
             print(f"[startup] TheMealDB background seed failed (non-fatal): {exc}")
 
+    async def _bg_migrations():
+        """One-time fixes: difficulty, categories, and CSV image backfill."""
+        # Fix hardcoded "medium" difficulty in existing MealDB rows
+        try:
+            fixed = _db.fix_mealdb_difficulty(_calc_difficulty)
+            if fixed:
+                app.state.recipes = _db.load_all_recipes()
+        except Exception as exc:
+            print(f"[startup] difficulty migration non-fatal: {exc}")
+
+        # Fix wrong category mappings in existing MealDB rows
+        try:
+            _db.fix_mealdb_categories()
+        except Exception as exc:
+            print(f"[startup] category migration non-fatal: {exc}")
+
+        # Backfill images for CSV recipes that have no image_url
+        try:
+            filled = await backfill_csv_images()
+            if filled > 0:
+                app.state.recipes = _db.load_all_recipes()
+                print(f"[startup] Recipes reloaded after image backfill ({len(app.state.recipes)} total).")
+        except Exception as exc:
+            print(f"[startup] CSV image backfill non-fatal: {exc}")
+
     try:
         asyncio.create_task(_bg_mealdb_seed())
+        asyncio.create_task(_bg_migrations())
     except RuntimeError:
-        # No running event loop (e.g. sync test client) — skip background seed
+        # No running event loop (e.g. sync test client) — skip background tasks
         pass
 
 
@@ -1238,8 +1349,6 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
 
 
 # Maps user-typed terms to internal category slugs
@@ -1541,7 +1650,9 @@ def recommend(payload: RecommendRequest, request: Request):
     ]
 
     if not filtered_recipes:
-        return []
+        # No recipes match the requested diet — broaden to all recipes rather
+        # than returning an empty list, so the user always gets suggestions.
+        filtered_recipes = list(recipes)
 
     # Prefer respecting the user's time limit; if too strict, fall back to diet-only.
     # Skip time filter when ingredients are present — ingredient matching is the primary
@@ -1999,6 +2110,11 @@ def track_interaction(payload: TrackRequest, request: Request):
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     interactions.append(interaction)
+
+    # Persist to Supabase so personalisation survives server restarts.
+    # Fire-and-forget style — never blocks the response even if Supabase is slow.
+    _db.save_interaction(payload.action, payload.recipe_id)
+
     return interaction
 
 
