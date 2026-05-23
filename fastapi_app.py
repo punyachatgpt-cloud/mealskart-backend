@@ -1002,13 +1002,15 @@ DEFAULT_NUTRITION = {"protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0}
 
 
 class RecommendRequest(BaseModel):
-    time_available: int
-    mood: Literal["quick", "healthy", "comfort"]
-    diet: Literal["veg", "non-veg"]
+    time_available: int = 999
+    mood: str = ""          # "quick" | "healthy" | "comfort" | "" (any)
+    diet: str = ""          # "veg" | "non-veg" | "" (any)
     mode: Literal["normal", "decide"] = "normal"
     ingredients: list[str] | None = None
     category: str | None = None
     name_query: str | None = None   # free-text: filter by name or key ingredient
+    allergies: list[str] | None = None   # e.g. ["gluten","dairy","nuts"]
+    cuisines: list[str] | None = None    # multi-cuisine picks from onboarding
 
 
 class TrackRequest(BaseModel):
@@ -1018,11 +1020,13 @@ class TrackRequest(BaseModel):
 
 class MealPlanRequest(BaseModel):
     days: int = 7
-    meals_per_day: int = 2
+    meals_per_day: int = 3
     time_available: int = 30
-    diet: Literal["veg", "non-veg"]
-    mood: Literal["quick", "healthy", "comfort"] | None = None
+    diet: str = ""          # "veg" | "non-veg" | "" (any)
+    mood: str | None = None
     category: str | None = None
+    allergies: list[str] | None = None
+    cuisines: list[str] | None = None
 
 
 def load_recipes(csv_path: Path):
@@ -1631,6 +1635,53 @@ def search_recipes(
     )
 
 
+# ── Allergen keyword map ──────────────────────────────────────────────────────
+# Maps allergy name → list of ingredient substrings to screen for.
+# A recipe is excluded if ANY of its ingredient names contains ANY keyword.
+_ALLERGEN_KEYWORDS: dict[str, list[str]] = {
+    "gluten":  ["wheat", "flour", "maida", "bread", "pasta", "noodle", "semolina",
+                "roti", "paratha", "puri", "naan", "barley", "rye", "atta",
+                "sooji", "rava", "cracker", "biscuit", "bun", "toast"],
+    "dairy":   ["milk", "butter", "cheese", "cream", "yogurt", "curd", "paneer",
+                "ghee", "khoya", "mawa", "condensed", "buttermilk", "whey",
+                "lassi", "malai", "rabri", "custard"],
+    "nuts":    ["almond", "cashew", "peanut", "walnut", "pistachio", "pine nut",
+                "hazelnut", "pecan", "chestnut", "nut ", "nuts", "groundnut"],
+    "eggs":    ["egg", "eggs", "omelette", "frittata", "mayonnaise", "mayo"],
+    "seafood": ["fish", "prawn", "shrimp", "crab", "lobster", "oyster", "mussel",
+                "squid", "tuna", "salmon", "cod", "mackerel", "sardine",
+                "anchovy", "clam", "scallop", "hilsa", "pomfret", "tilapia",
+                "rohu", "catla", "bhekti"],
+    "soy":     ["soy", "tofu", "tempeh", "miso", "edamame", "soya"],
+}
+
+
+def _recipe_has_allergen(recipe: dict, allergy: str) -> bool:
+    """Return True if the recipe contains any ingredient matching the allergy."""
+    keywords = _ALLERGEN_KEYWORDS.get(allergy.lower(), [])
+    if not keywords:
+        return False
+    # Check ingredient list (primary) and recipe name (secondary)
+    ingredient_text = " ".join(recipe.get("ingredients_list", [])).lower()
+    name_text       = recipe.get("name", "").lower()
+    combined        = ingredient_text + " " + name_text
+    return any(kw in combined for kw in keywords)
+
+
+def apply_allergy_filter(recipes: list[dict], allergies: list[str] | None) -> list[dict]:
+    """Remove recipes that contain any of the user's allergens.
+    Keeps all recipes if allergies is None / empty."""
+    if not allergies:
+        return recipes
+    clean_allergies = [a.strip().lower() for a in allergies if a.strip().lower() in _ALLERGEN_KEYWORDS]
+    if not clean_allergies:
+        return recipes
+    safe = [r for r in recipes if not any(_recipe_has_allergen(r, a) for a in clean_allergies)]
+    # Safety net: if allergy filter removed everything, return original pool
+    # (better to show something than an empty page)
+    return safe if safe else recipes
+
+
 @app.post("/recommend")
 def recommend(payload: RecommendRequest, request: Request):
     ranked = []
@@ -1644,27 +1695,47 @@ def recommend(payload: RecommendRequest, request: Request):
             recipe_code = event.get("recipe_id")
             cook_counts[recipe_code] = cook_counts.get(recipe_code, 0) + 1
 
-    filtered_recipes = [
-        r for r in recipes
-        if r["diet"].strip().lower() == diet.strip().lower()
-    ]
+    # ── Diet filter ───────────────────────────────────────────────────────────
+    if diet:
+        filtered_recipes = [
+            r for r in recipes
+            if r["diet"].strip().lower() == diet.strip().lower()
+        ]
+        if not filtered_recipes:
+            filtered_recipes = list(recipes)   # broaden if nothing matches
+    else:
+        filtered_recipes = list(recipes)   # "Any" diet — show all
 
-    if not filtered_recipes:
-        # No recipes match the requested diet — broaden to all recipes rather
-        # than returning an empty list, so the user always gets suggestions.
-        filtered_recipes = list(recipes)
+    # ── Allergy filter ────────────────────────────────────────────────────────
+    # Applied early so all downstream filters operate on a safe pool.
+    filtered_recipes = apply_allergy_filter(filtered_recipes, payload.allergies)
 
+    # ── Time filter ───────────────────────────────────────────────────────────
     # Prefer respecting the user's time limit; if too strict, fall back to diet-only.
     # Skip time filter when ingredients are present — ingredient matching is the primary
     # constraint, so we should not pre-eliminate recipes before the ingredient step.
     has_ingredients = bool(payload.ingredients)
-    if not has_ingredients:
+    if not has_ingredients and payload.time_available and payload.time_available < 999:
         time_filtered_recipes = [r for r in filtered_recipes if int(r["time_minutes"]) <= payload.time_available]
         if time_filtered_recipes:
             filtered_recipes = time_filtered_recipes
 
-    # Category guides intent, but falls back gracefully when too narrow.
-    if category:
+    # ── Category / multi-cuisine filter ──────────────────────────────────────
+    # Multi-cuisine (payload.cuisines) takes precedence over single category.
+    # Falls back gracefully when too narrow.
+    cuisines_norm = [normalize_category(c) for c in (payload.cuisines or []) if c]
+    cuisines_norm = [c for c in cuisines_norm if c]   # drop empty strings
+
+    if cuisines_norm:
+        # Match any of the selected cuisines
+        multi_cat_filtered = [
+            r for r in filtered_recipes
+            if (r.get("category") or "").strip().lower() in cuisines_norm
+        ]
+        if multi_cat_filtered:
+            filtered_recipes = multi_cat_filtered
+        # else fall through — don't narrow down further
+    elif category:
         category_filtered_recipes = [
             r for r in filtered_recipes
             if (r.get("category") or "").strip().lower() == category
@@ -1769,9 +1840,14 @@ def recommend(payload: RecommendRequest, request: Request):
         # Ingredient match boost (only when ingredient filtering is active).
         if normalized_user_ingredients and int(recipe["id"]) in ingredient_match_ids:
             score += 2
+        # Single-category boost
         if category and (recipe.get("category") or "").strip().lower() == category:
             score += 1.5
             reasons.append(f"matches {category.replace('-', ' ')} preference")
+        # Multi-cuisine boost: recipe matches any of the user's preferred cuisines
+        if cuisines_norm and recipe_cat in cuisines_norm:
+            score += 1.2
+            reasons.append(f"matches your cuisine preference")
         cook_count = cook_counts.get(to_recipe_code(int(recipe["id"])), 0)
         if cook_count > 0:
             score -= cook_count * 0.5
@@ -2021,13 +2097,32 @@ def meal_plan(payload: MealPlanRequest, request: Request):
     meals_per_day = max(1, min(int(payload.meals_per_day), 3))
     category = normalize_category(payload.category)
 
-    candidates = [
-        r for r in recipes
-        if r["diet"].strip().lower() == payload.diet.strip().lower()
-        and int(r["time_minutes"]) <= int(payload.time_available)
-    ]
+    # Diet filter (empty string = any)
+    if payload.diet:
+        candidates = [
+            r for r in recipes
+            if r["diet"].strip().lower() == payload.diet.strip().lower()
+            and int(r["time_minutes"]) <= int(payload.time_available)
+        ]
+        if not candidates:
+            candidates = [r for r in recipes if int(r["time_minutes"]) <= int(payload.time_available)]
+    else:
+        candidates = [r for r in recipes if int(r["time_minutes"]) <= int(payload.time_available)]
 
-    if category:
+    # Allergy filter
+    candidates = apply_allergy_filter(candidates, payload.allergies)
+
+    # Category / multi-cuisine filter
+    plan_cuisines = [normalize_category(c) for c in (payload.cuisines or []) if c]
+    plan_cuisines = [c for c in plan_cuisines if c]
+    if plan_cuisines:
+        cuisine_matches = [
+            r for r in candidates
+            if (r.get("category") or "").strip().lower() in plan_cuisines
+        ]
+        if cuisine_matches:
+            candidates = cuisine_matches
+    elif category:
         category_matches = [
             r for r in candidates
             if (r.get("category") or "").strip().lower() == category
