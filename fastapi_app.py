@@ -1018,7 +1018,7 @@ class TrackRequest(BaseModel):
 
 class MealPlanRequest(BaseModel):
     days: int = 7
-    meals_per_day: int = 2
+    meals_per_day: int = 3
     time_available: int = 30
     diet: Literal["veg", "non-veg"]
     mood: Literal["quick", "healthy", "comfort"] | None = None
@@ -2014,6 +2014,9 @@ def get_recipe(id: int, request: Request):
     }
 
 
+_MEAL_TYPES = ["breakfast", "lunch", "dinner"]
+
+
 @app.post("/meal-plan")
 def meal_plan(payload: MealPlanRequest, request: Request):
     recipes = get_loaded_recipes(request)
@@ -2069,7 +2072,10 @@ def meal_plan(payload: MealPlanRequest, request: Request):
         days.append(
             {
                 "day": day_index + 1,
-                "recipes": [recipe_summary(recipe) for recipe in day_recipes],
+                "recipes": [
+                    {**recipe_summary(recipe), "meal_type": _MEAL_TYPES[mi] if mi < len(_MEAL_TYPES) else "meal"}
+                    for mi, recipe in enumerate(day_recipes)
+                ],
             }
         )
 
