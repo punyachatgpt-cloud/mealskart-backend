@@ -2679,6 +2679,194 @@ async def push_send(request: Request):
     return {"sent": sent, "failed": failed, "stale_removed": len(stale_endpoints)}
 
 
+# ── Recipe URL Import ─────────────────────────────────────────────────────────
+import re as _re
+import html as _html_mod
+
+class ImportRecipeRequest(BaseModel):
+    url: str
+
+def _strip_html_to_text(raw_html: str, max_chars: int = 18000) -> str:
+    """Strip HTML tags, collapse whitespace, trim to max_chars for AI context."""
+    # Remove script, style, nav, footer, header, aside blocks entirely
+    cleaned = _re.sub(
+        r'<(script|style|nav|footer|header|aside|noscript|svg)[^>]*>.*?</\1>',
+        ' ', raw_html, flags=_re.DOTALL | _re.IGNORECASE
+    )
+    # Remove all remaining HTML tags
+    cleaned = _re.sub(r'<[^>]+>', ' ', cleaned)
+    # Decode HTML entities
+    cleaned = _html_mod.unescape(cleaned)
+    # Collapse runs of whitespace
+    cleaned = _re.sub(r'\s{2,}', '\n', cleaned).strip()
+    return cleaned[:max_chars]
+
+def _extract_og_image(raw_html: str) -> str:
+    """Pull og:image or first large <img> src from page HTML."""
+    m = _re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', raw_html, _re.IGNORECASE)
+    if not m:
+        m = _re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', raw_html, _re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Fallback: first img with a largish src
+    imgs = _re.findall(r'<img[^>]+src=["\']([^"\']{20,})["\']', raw_html, _re.IGNORECASE)
+    for img in imgs:
+        if any(ext in img.lower() for ext in ['.jpg', '.jpeg', '.webp', '.png']):
+            return img
+    return ""
+
+_IMPORT_SYSTEM = """You are a recipe extraction AI. Given raw webpage text, extract the recipe and return ONLY valid JSON — no markdown, no prose, nothing else.
+
+Return this exact JSON shape (all fields required, use empty string/array/0 if data is missing):
+{
+  "name": "Recipe title",
+  "cuisine": "e.g. Italian, Indian, Mexican",
+  "time_minutes": 30,
+  "servings": 4,
+  "difficulty": "easy|medium|hard",
+  "calories": 350,
+  "description": "One sentence description",
+  "ingredients_raw": ["1 cup flour", "2 tbsp butter", "3 eggs"],
+  "steps": ["Step 1 text.", "Step 2 text."]
+}
+
+Rules:
+- ingredients_raw: each element is ONE ingredient line with quantity+unit+name, e.g. "2 cups all-purpose flour"
+- steps: each element is ONE complete step. Never break mid-sentence.
+- difficulty: infer from time and technique (easy <30 min simple steps, hard >60 min or advanced)
+- calories: per serving. Use 0 if not found.
+- Return ONLY the JSON object. No explanation."""
+
+async def _call_ai_for_import(text: str) -> str:
+    """Call AI providers in order (Claude → Groq → Gemini) for recipe extraction."""
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    groq_key      = os.getenv("GROQ_API_KEY", "").strip()
+    gemini_key    = os.getenv("GEMINI_API_KEY", "").strip()
+
+    user_msg = f"Extract the recipe from this webpage text:\n\n{text}"
+
+    if anthropic_key:
+        try:
+            import anthropic as _anthropic
+            client = _anthropic.Anthropic(api_key=anthropic_key)
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1800,
+                system=_IMPORT_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            return (resp.content[0].text or "").strip()
+        except Exception:
+            pass
+
+    if groq_key:
+        try:
+            return await _call_groq(groq_key, _IMPORT_SYSTEM, [], user_msg)
+        except Exception:
+            pass
+
+    if gemini_key:
+        try:
+            return await _call_gemini(gemini_key, _IMPORT_SYSTEM, [], user_msg)
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=503, detail="No AI provider available")
+
+@app.post("/import-recipe")
+async def import_recipe(payload: ImportRecipeRequest):
+    """Fetch a recipe page URL and use AI to extract a structured recipe."""
+    url = (payload.url or "").strip()
+
+    # Basic validation
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+    blocked = ["localhost", "127.0.0.1", "0.0.0.0", "169.254.", "10.", "192.168.", "::1"]
+    if any(b in url for b in blocked):
+        raise HTTPException(status_code=400, detail="Private URLs are not allowed")
+
+    # Fetch the page
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; SimmerBot/1.0; +https://mealskart.vercel.app)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True, max_redirects=5) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=422, detail=f"Could not fetch page (HTTP {resp.status_code})")
+            raw_html = resp.text
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=408, detail="Page took too long to load")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=422, detail=f"Could not reach URL: {str(e)[:120]}")
+
+    # Extract OG image before stripping HTML
+    image_url = _extract_og_image(raw_html)
+
+    # Strip to plain text for AI
+    page_text = _strip_html_to_text(raw_html)
+    if len(page_text) < 100:
+        raise HTTPException(status_code=422, detail="Page has too little readable text")
+
+    # Call AI
+    ai_raw = await _call_ai_for_import(page_text)
+
+    # Parse AI JSON response
+    try:
+        json_str = ai_raw
+        # Handle code-fenced responses
+        m = _re.search(r'```(?:json)?\s*([\s\S]*?)```', json_str)
+        if m:
+            json_str = m.group(1)
+        # Find first { ... } block
+        m = _re.search(r'\{[\s\S]*\}', json_str)
+        if not m:
+            raise ValueError("No JSON object found")
+        import json as _json
+        data = _json.loads(m.group(0))
+    except Exception:
+        raise HTTPException(status_code=422, detail="AI could not parse a recipe from this page")
+
+    # Validate minimum required fields
+    if not data.get("name") or not data.get("steps"):
+        raise HTTPException(status_code=422, detail="No recipe found on this page")
+
+    # Parse ingredients_raw into structured format using the same logic as the frontend
+    def _parse_ing(line: str):
+        line = line.strip()
+        if not line:
+            return None
+        m = _re.match(r'^(\d+(?:[./]\d+)?)\s*([a-z]+(?:\s[a-z]+)*)?\s+(.+)$', line, _re.IGNORECASE)
+        if m:
+            raw_qty = m.group(1)
+            qty = eval(raw_qty) if '/' in raw_qty else float(raw_qty)  # noqa: S307
+            return {"name": m.group(3).strip(), "quantity": round(qty, 3), "unit": (m.group(2) or "").lower().strip()}
+        return {"name": line, "quantity": None, "unit": ""}
+
+    ingredients_raw = data.get("ingredients_raw", [])
+    parsed_ings = [p for p in (_parse_ing(l) for l in ingredients_raw) if p]
+
+    # Build response in Simmer's recipe schema
+    return {
+        "name":        data.get("name", "Imported Recipe"),
+        "cuisine":     data.get("cuisine", ""),
+        "description": data.get("description", ""),
+        "time_minutes": int(data.get("time_minutes") or 30),
+        "servings":    int(data.get("servings") or 2),
+        "difficulty":  data.get("difficulty", "easy"),
+        "calories":    int(data.get("calories") or 0),
+        "ingredients": [i["name"] for i in parsed_ings],
+        "ingredients_with_quantities": parsed_ings,
+        "ingredients_preview": [i["name"] for i in parsed_ings[:4]],
+        "steps":       [s.strip() for s in data.get("steps", []) if str(s).strip()],
+        "image_url":   image_url,
+        "source_url":  url,
+        "custom":      True,
+    }
+
+
 @app.post("/push/weekly-recap")
 async def push_weekly_recap(request: Request):
     """Send weekly recap push every Sunday evening. Called by external cron."""
