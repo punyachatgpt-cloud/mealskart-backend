@@ -173,6 +173,11 @@
       transform: scale(1.02);
     }
 
+    .card:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .best-badge {
       display: inline-block;
       margin: 0 0 10px;
@@ -431,6 +436,9 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("aria-label", `View recipe for ${item.name}`);
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,9 +451,16 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const openCard = () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        };
+        card.addEventListener("click", openCard);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openCard();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
