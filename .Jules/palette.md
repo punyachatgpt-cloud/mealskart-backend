@@ -1,0 +1,3 @@
+## 2025-05-22 - [Accessibility & Keyboard Navigation Pass]
+**Learning:** For single-page applications with dynamic content, accessibility attributes like `role="button"` and `tabindex="0"` must be applied at the point of creation in JavaScript, along with explicit keyboard listeners (Enter/Space) to mirror click behavior. Additionally, `aria-pressed` provides necessary state feedback for selection groups that isn't conveyed by CSS classes alone.
+**Action:** Always verify that dynamic card-like results are focusable and triggerable via keyboard. Use `setAttribute` in JS for consistency across screen readers.
