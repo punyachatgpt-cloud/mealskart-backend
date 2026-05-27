@@ -161,6 +161,11 @@
       cursor: pointer;
     }
 
+    .card:focus-visible, .choice-btn:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 4px;
+    }
+
     .card.highlighted {
       border-color: var(--accent);
       background: var(--accent-soft);
@@ -362,6 +367,7 @@
 
     let modalSteps = [];
     let currentStepIndex = 0;
+    let lastFocusedElement = null;
     const LAST_MODE_KEY = "foodai_last_mode";
 
     function toRecipeCode(recipeId) {
@@ -431,6 +437,9 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", `View recipe for ${item.name}`);
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,9 +452,16 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const openModal = () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        };
+        card.addEventListener("click", openModal);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openModal();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
@@ -481,7 +497,9 @@
         modalSteps = Array.isArray(recipe.steps) ? recipe.steps : [];
         currentStepIndex = 0;
         updateModalStep();
+        lastFocusedElement = document.activeElement;
         recipeModal.classList.add("open");
+        nextStepBtn.focus();
       } catch (error) {
         statusText.textContent = "Could not load cooking steps right now.";
       }
@@ -489,6 +507,9 @@
 
     function closeRecipeModal() {
       recipeModal.classList.remove("open");
+      if (lastFocusedElement) {
+        lastFocusedElement.focus();
+      }
     }
 
     async function getSuggestions(mode = "normal") {
@@ -542,6 +563,13 @@
         closeRecipeModal();
       }
     });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && recipeModal.classList.contains("open")) {
+        closeRecipeModal();
+      }
+    });
+
     bindChoiceButtons();
     getSuggestions(getInitialMode());
   </script>
