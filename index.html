@@ -284,27 +284,27 @@
     <p class="subtitle">Pick your time, mood, and diet. We will suggest the best 3 dishes.</p>
 
     <section class="panel">
-      <p class="section-label">1. Time</p>
-      <div class="choices" id="timeChoices">
-        <button class="choice-btn selected" data-group="time" data-value="15">15 min</button>
-        <button class="choice-btn" data-group="time" data-value="30">30 min</button>
+      <p class="section-label" id="timeLabel">1. Time</p>
+      <div class="choices" id="timeChoices" role="group" aria-labelledby="timeLabel">
+        <button class="choice-btn selected" data-group="time" data-value="15" aria-pressed="true">15 min</button>
+        <button class="choice-btn" data-group="time" data-value="30" aria-pressed="false">30 min</button>
       </div>
     </section>
 
     <section class="panel">
-      <p class="section-label">2. Mood</p>
-      <div class="choices" id="moodChoices">
-        <button class="choice-btn selected" data-group="mood" data-value="quick">quick</button>
-        <button class="choice-btn" data-group="mood" data-value="healthy">healthy</button>
-        <button class="choice-btn" data-group="mood" data-value="comfort">comfort</button>
+      <p class="section-label" id="moodLabel">2. Mood</p>
+      <div class="choices" id="moodChoices" role="group" aria-labelledby="moodLabel">
+        <button class="choice-btn selected" data-group="mood" data-value="quick" aria-pressed="true">quick</button>
+        <button class="choice-btn" data-group="mood" data-value="healthy" aria-pressed="false">healthy</button>
+        <button class="choice-btn" data-group="mood" data-value="comfort" aria-pressed="false">comfort</button>
       </div>
     </section>
 
     <section class="panel">
-      <p class="section-label">3. Diet</p>
-      <div class="choices" id="dietChoices">
-        <button class="choice-btn selected" data-group="diet" data-value="veg">veg</button>
-        <button class="choice-btn" data-group="diet" data-value="non-veg">non-veg</button>
+      <p class="section-label" id="dietLabel">3. Diet</p>
+      <div class="choices" id="dietChoices" role="group" aria-labelledby="dietLabel">
+        <button class="choice-btn selected" data-group="diet" data-value="veg" aria-pressed="true">veg</button>
+        <button class="choice-btn" data-group="diet" data-value="non-veg" aria-pressed="false">non-veg</button>
       </div>
     </section>
 
@@ -312,8 +312,8 @@
       <button class="action" id="suggestBtn">Get Suggestion</button>
       <button class="action secondary" id="decideBtn">Decide For Me</button>
     </section>
-    <p class="status" id="statusText"></p>
-    <p class="ready-text" id="readyText">Your quick meal is ready</p>
+    <p class="status" id="statusText" aria-live="polite"></p>
+    <p class="ready-text" id="readyText" aria-live="polite">Your quick meal is ready</p>
     <p class="tap-hint" id="tapHint">Tap a dish to start cooking</p>
 
     <section class="results" id="results"></section>
@@ -393,7 +393,9 @@
 
     function setSelected(group, value) {
       document.querySelectorAll(`[data-group="${group}"]`).forEach((btn) => {
-        btn.classList.toggle("selected", btn.dataset.value === value);
+        const isSelected = btn.dataset.value === value;
+        btn.classList.toggle("selected", isSelected);
+        btn.setAttribute("aria-pressed", isSelected);
       });
     }
 
@@ -431,6 +433,9 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("aria-label", `View recipe for ${item.name}`);
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,9 +448,16 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const openAction = () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        };
+        card.addEventListener("click", openAction);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openAction();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
@@ -539,6 +551,11 @@
     closeModalBtn.addEventListener("click", closeRecipeModal);
     recipeModal.addEventListener("click", (event) => {
       if (event.target === recipeModal) {
+        closeRecipeModal();
+      }
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && recipeModal.classList.contains("open")) {
         closeRecipeModal();
       }
     });
