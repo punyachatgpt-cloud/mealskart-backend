@@ -16,8 +16,22 @@ from pydantic import BaseModel
 
 import db as _db
 from auth.dependencies import get_current_user, get_optional_user
+from auth.limits import check_limit, log_usage
 from auth.router import router as auth_router
 from auth.supabase_client import supabase_admin
+
+
+def _gate_and_log(user: dict | None, feature: str) -> None:
+    """
+    Server-side tier gate for a paid feature. Raises HTTP 429 if a signed-in
+    user is over their limit, then records the usage. No-op for anonymous users
+    and while tier_limits.enforcement_enabled is FALSE — so this is safe to ship
+    dormant and is flipped on with a single SQL UPDATE.
+    """
+    if not user:
+        return
+    check_limit(user, feature)   # type: ignore[arg-type]  — raises 429 if over
+    log_usage(user, feature)     # type: ignore[arg-type]
 
 load_dotenv()
 
@@ -2178,7 +2192,12 @@ def get_recipe(id: int, request: Request):
 
 
 @app.post("/meal-plan")
-def meal_plan(payload: MealPlanRequest, request: Request):
+def meal_plan(
+    payload: MealPlanRequest,
+    request: Request,
+    user: dict | None = Depends(get_optional_user),
+):
+    _gate_and_log(user, "meal_plan")   # tier gate (dormant until enabled)
     recipes = get_loaded_recipes(request)
     days_count = max(1, min(int(payload.days), 7))
     meals_per_day = max(1, min(int(payload.meals_per_day), 3))
@@ -2542,12 +2561,16 @@ async def _call_groq(api_key: str, system_prompt: str, messages: list[dict], use
 
 
 @app.post("/ai-chat")
-async def ai_chef_chat(payload: AIChatRequest):
+async def ai_chef_chat(
+    payload: AIChatRequest,
+    user: dict | None = Depends(get_optional_user),
+):
     """
     AI cooking assistant — supports Anthropic Claude (ANTHROPIC_API_KEY)
     or Google Gemini Flash (GEMINI_API_KEY) as a free alternative.
     Returns a natural-language reply and an optional recipe search query.
     """
+    _gate_and_log(user, "ask_chef")   # tier gate (dormant until enabled)
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     groq_key      = os.getenv("GROQ_API_KEY", "").strip()
     gemini_key    = os.getenv("GEMINI_API_KEY", "").strip()
