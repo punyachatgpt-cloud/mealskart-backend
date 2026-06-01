@@ -1669,36 +1669,87 @@ def search_recipes(
 
 
 # ── Allergen keyword map ──────────────────────────────────────────────────────
-# Maps allergy name → list of ingredient substrings to screen for.
-# A recipe is excluded if ANY of its ingredient names contains ANY keyword.
+import re as _re_allergen
+
+# Maps allergy name → ingredient terms to screen for.
+# Matching is WORD-BOUNDARY based (with optional trailing "s"), so:
+#   • "egg" does NOT match "eggplant", "wheat" does NOT match "buckwheat"
+#     (buckwheat is naturally gluten-free), "nut" does NOT match "coconut".
+#   • lists are kept deliberately broad (incl. synonyms) — for an allergy filter,
+#     missing a real allergen is far worse than over-removing a safe dish.
 _ALLERGEN_KEYWORDS: dict[str, list[str]] = {
-    "gluten":  ["wheat", "flour", "maida", "bread", "pasta", "noodle", "semolina",
-                "roti", "paratha", "puri", "naan", "barley", "rye", "atta",
-                "sooji", "rava", "cracker", "biscuit", "bun", "toast"],
-    "dairy":   ["milk", "butter", "cheese", "cream", "yogurt", "curd", "paneer",
-                "ghee", "khoya", "mawa", "condensed", "buttermilk", "whey",
-                "lassi", "malai", "rabri", "custard"],
-    "nuts":    ["almond", "cashew", "peanut", "walnut", "pistachio", "pine nut",
-                "hazelnut", "pecan", "chestnut", "nut ", "nuts", "groundnut"],
-    "eggs":    ["egg", "eggs", "omelette", "frittata", "mayonnaise", "mayo"],
+    "gluten":  ["wheat", "whole wheat", "flour", "maida", "atta", "bread", "pasta",
+                "noodle", "macaroni", "vermicelli", "semolina", "sooji", "rava",
+                "roti", "paratha", "puri", "poori", "naan", "kulcha", "bhatura",
+                "barley", "rye", "malt", "bran", "couscous", "bulgur", "farro",
+                "durum", "spelt", "seitan", "cracker", "biscuit", "bun", "toast"],
+    "dairy":   ["milk", "butter", "cheese", "cream", "yogurt", "yoghurt", "curd",
+                "dahi", "paneer", "ghee", "khoya", "mawa", "condensed milk",
+                "buttermilk", "whey", "casein", "lassi", "malai", "rabri", "rabdi",
+                "custard", "kheer", "kulfi", "shrikhand", "chhena"],
+    "nuts":    ["almond", "cashew", "kaju", "peanut", "groundnut", "walnut",
+                "pistachio", "pista", "pine nut", "hazelnut", "pecan", "chestnut",
+                "macadamia", "marzipan", "praline", "nougat", "nutella", "nut"],
+    "eggs":    ["egg", "omelette", "omelet", "frittata", "mayonnaise", "mayo",
+                "meringue", "aioli", "albumen"],
     "seafood": ["fish", "prawn", "shrimp", "crab", "lobster", "oyster", "mussel",
-                "squid", "tuna", "salmon", "cod", "mackerel", "sardine",
-                "anchovy", "clam", "scallop", "hilsa", "pomfret", "tilapia",
-                "rohu", "catla", "bhekti"],
-    "soy":     ["soy", "tofu", "tempeh", "miso", "edamame", "soya"],
+                "squid", "calamari", "octopus", "tuna", "salmon", "cod", "mackerel",
+                "sardine", "anchovy", "clam", "scallop", "caviar", "roe", "surimi",
+                "krill", "hilsa", "pomfret", "tilapia", "rohu", "catla", "bhetki",
+                "bhekti"],
+    "soy":     ["soy", "soya", "tofu", "tempeh", "miso", "edamame", "tamari", "tvp"],
+}
+
+# Terms that must NEVER trigger an allergen even though they look similar — a
+# second safety guard for word-boundary edge cases (e.g. "water chestnut" is an
+# aquatic vegetable, not a tree nut).
+_ALLERGEN_SAFE_TERMS: dict[str, list[str]] = {
+    "nuts": ["water chestnut", "nutmeg", "butternut", "coconut"],
+    # Naturally gluten-free flours/grains — stripped before matching so the
+    # generic "flour" keyword doesn't wrongly exclude rice/besan/millet dishes
+    # (common staples) for gluten-sensitive users.
+    "gluten": ["buckwheat flour", "buckwheat", "rice flour", "corn flour",
+               "cornflour", "cornstarch", "gram flour", "chickpea flour", "besan",
+               "almond flour", "coconut flour", "millet flour", "jowar flour",
+               "bajra flour", "ragi flour", "tapioca flour", "potato flour",
+               "oat flour"],
+}
+
+# Precompiled, word-boundary matchers (case-insensitive, optional plural "s").
+_ALLERGEN_RE: dict[str, "_re_allergen.Pattern"] = {
+    allergy: _re_allergen.compile(
+        r"\b(?:" + "|".join(_re_allergen.escape(k) for k in kws) + r")s?\b",
+        _re_allergen.IGNORECASE,
+    )
+    for allergy, kws in _ALLERGEN_KEYWORDS.items()
+}
+_ALLERGEN_SAFE_RE: dict[str, "_re_allergen.Pattern"] = {
+    # Longest phrases first so e.g. "buckwheat flour" is stripped whole rather
+    # than matching the shorter "buckwheat" and leaving "flour" behind.
+    allergy: _re_allergen.compile(
+        r"\b(?:" + "|".join(
+            _re_allergen.escape(k) for k in sorted(terms, key=len, reverse=True)
+        ) + r")s?\b",
+        _re_allergen.IGNORECASE,
+    )
+    for allergy, terms in _ALLERGEN_SAFE_TERMS.items()
 }
 
 
 def _recipe_has_allergen(recipe: dict, allergy: str) -> bool:
     """Return True if the recipe contains any ingredient matching the allergy."""
-    keywords = _ALLERGEN_KEYWORDS.get(allergy.lower(), [])
-    if not keywords:
+    rx = _ALLERGEN_RE.get(allergy.lower())
+    if rx is None:
         return False
-    # Check ingredient list (primary) and recipe name (secondary)
-    ingredient_text = " ".join(recipe.get("ingredients_list", [])).lower()
-    name_text       = recipe.get("name", "").lower()
-    combined        = ingredient_text + " " + name_text
-    return any(kw in combined for kw in keywords)
+    ingredient_text = " ".join(recipe.get("ingredients_list", []))
+    combined = ingredient_text + " " + recipe.get("name", "")
+
+    # Strip out known-safe lookalikes first so they can't trigger a match.
+    safe_rx = _ALLERGEN_SAFE_RE.get(allergy.lower())
+    if safe_rx is not None:
+        combined = safe_rx.sub(" ", combined)
+
+    return bool(rx.search(combined))
 
 
 def apply_allergy_filter(recipes: list[dict], allergies: list[str] | None) -> list[dict]:

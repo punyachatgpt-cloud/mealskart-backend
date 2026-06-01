@@ -15,3 +15,6 @@ anthropic>=0.40.0             # Claude API — AI Chef chat endpoint
 
 # ── Text-to-Speech ────────────────────────────────────────────────────────────
 gTTS>=2.5.1                   # Google TTS — natural multilingual voice for Cook Genie
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+pytest>=8.0.0
