@@ -103,25 +103,56 @@ def get_existing_external_ids() -> set[str]:
 
 # ── Interactions (personalization) ───────────────────────────────────────────
 
-def save_interaction(action: str, recipe_id) -> dict:
+def save_interaction(action: str, recipe_id, user_id: str | None = None) -> dict:
     """
     Persist a user interaction to Supabase.
-    Fails silently if the interactions table hasn't been created yet —
-    call is always safe to make, personalisation simply won't survive restarts
-    until the table exists.
+    `user_id` (public.users.id) scopes the interaction to one user so it only
+    influences that user's recommendations. None for anonymous/logged-out users.
+    Fails silently if the interactions table / user_id column doesn't exist yet —
+    call is always safe to make.
     """
     row = {
         "action":    action,
         "recipe_id": str(recipe_id) if recipe_id is not None else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if user_id:
+        row["user_id"] = user_id
     try:
         result = supabase_admin.table("interactions").insert(row).execute()
         return result.data[0] if result.data else row
     except Exception as exc:
-        # Table may not exist yet — gracefully degrade to in-memory only
+        # Column/table may not exist yet — retry without user_id, then degrade.
+        if user_id:
+            try:
+                row.pop("user_id", None)
+                result = supabase_admin.table("interactions").insert(row).execute()
+                return result.data[0] if result.data else row
+            except Exception:
+                pass
         print(f"[db] interactions insert skipped ({exc.__class__.__name__}): {exc}")
         return row
+
+
+def load_user_interactions(user_id: str, limit: int = 500) -> list[dict]:
+    """
+    Load a single user's recent interactions (oldest-first) to build that
+    user's personalization profile. Returns [] on any error (e.g. user_id
+    column not yet migrated) so recommendations simply fall back to neutral.
+    """
+    try:
+        result = (
+            supabase_admin.table("interactions")
+            .select("action, recipe_id, timestamp")
+            .eq("user_id", user_id)
+            .order("timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return list(reversed(result.data or []))
+    except Exception as exc:
+        print(f"[db] user interactions load skipped ({exc.__class__.__name__}): {exc}")
+        return []
 
 
 def load_recent_interactions(limit: int = 500) -> list[dict]:

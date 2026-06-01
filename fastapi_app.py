@@ -1229,46 +1229,78 @@ def recipe_summary(recipe) -> dict:
 
 
 INDEX_PATH = Path(__file__).resolve().parent / "index.html"
-interactions: list[dict] = []
+interactions: list[dict] = []          # in-memory log (used by /interactions)
 recent_suggestions: list = []
-user_preferences: dict[str, int] = {
-    "quick": 0, "healthy": 0, "comfort": 0,
-    "veg": 0, "non-veg": 0,
-    # cuisine categories — boosted when user cooks from them
-    "north-indian": 0, "south-indian": 0, "continental": 0,
-    "chinese": 0, "snacks": 0, "sweets": 0, "drinks": 0, "salad": 0, "other": 0,
-}
 
 
-def _rebuild_preferences_from_interactions(recipes: list[dict]) -> None:
-    """
-    Recompute user_preferences by replaying the in-memory interactions list.
-    Called at startup after loading persisted interactions from Supabase.
-    """
-    # Reset all counts
-    for key in list(user_preferences.keys()):
-        user_preferences[key] = 0
+# ── Per-user personalization ──────────────────────────────────────────────────
+# Each user's recommendations are driven ONLY by their own cook history.
+# (Replaces the previous global blend where everyone's history was mixed together.)
+import time as _time
 
+_PREF_KEYS = (
+    "quick", "healthy", "comfort", "veg", "non-veg",
+    "north-indian", "south-indian", "continental", "chinese",
+    "snacks", "sweets", "drinks", "salad", "other",
+)
+_user_profile_cache: dict[str, tuple[dict, dict, float]] = {}  # user_id -> (prefs, cook_counts, ts)
+_USER_PROFILE_TTL = 120.0  # seconds — recompute from DB at most this often per user
+
+
+def _empty_prefs() -> dict[str, int]:
+    return {k: 0 for k in _PREF_KEYS}
+
+
+def _profile_from_events(events: list[dict], recipes: list[dict]) -> tuple[dict, dict]:
+    """Build (preferences, cook_counts) from a list of interaction events."""
+    prefs = _empty_prefs()
+    cook_counts: dict = {}
     recipe_map = {int(r["id"]): r for r in recipes}
-
-    for event in interactions:
+    for event in events:
         if event.get("action") != "cook":
             continue
-        tracked_id = parse_tracked_recipe_id(event.get("recipe_id"))
-        if tracked_id is None:
+        code = event.get("recipe_id")
+        cook_counts[code] = cook_counts.get(code, 0) + 1
+        tid = parse_tracked_recipe_id(code)
+        if tid is None:
             continue
-        recipe = recipe_map.get(tracked_id)
+        recipe = recipe_map.get(tid)
         if recipe is None:
             continue
         for tag in recipe.get("tags", []):
-            if tag in user_preferences:
-                user_preferences[tag] += 1
+            if tag in prefs:
+                prefs[tag] += 1
         diet = (recipe.get("diet") or "").strip().lower()
-        if diet in user_preferences:
-            user_preferences[diet] += 1
+        if diet in prefs:
+            prefs[diet] += 1
         cat = (recipe.get("category") or "").strip().lower()
-        if cat in user_preferences:
-            user_preferences[cat] += 1
+        if cat in prefs:
+            prefs[cat] += 1
+    return prefs, cook_counts
+
+
+def get_user_profile(user_id: str | None, recipes: list[dict]) -> tuple[dict, dict]:
+    """
+    Return (preferences, cook_counts) for a user, briefly cached.
+    Anonymous users (user_id is None) get a neutral profile — no personalization —
+    so one user's history can never influence another's recommendations.
+    """
+    if not user_id:
+        return _empty_prefs(), {}
+    now = _time.monotonic()
+    cached = _user_profile_cache.get(user_id)
+    if cached and now - cached[2] < _USER_PROFILE_TTL:
+        return cached[0], cached[1]
+    events = _db.load_user_interactions(user_id, 500)
+    prefs, cook_counts = _profile_from_events(events, recipes)
+    _user_profile_cache[user_id] = (prefs, cook_counts, now)
+    return prefs, cook_counts
+
+
+def invalidate_user_profile(user_id: str | None) -> None:
+    """Drop a user's cached profile so their next /recommend reflects a fresh cook."""
+    if user_id:
+        _user_profile_cache.pop(user_id, None)
 
 
 @app.on_event("startup")
@@ -1277,7 +1309,7 @@ async def load_recipes_on_startup():
     Startup sequence:
       1. Seed CSV data (idempotent, fast).
       2. Load all recipes from Supabase into app.state.recipes.
-      3. Load persisted interactions from Supabase, rebuild user_preferences.
+      3. Load persisted interactions from Supabase (per-user prefs build on demand).
       4. Run one-time DB migrations in background (difficulty + category fixes).
       5. Kick off TheMealDB seeding as a background task.
     Falls back gracefully if Supabase / TheMealDB is unreachable.
@@ -1291,11 +1323,12 @@ async def load_recipes_on_startup():
     app.state.recipes = _db.load_all_recipes()
     print(f"[startup] Loaded {len(app.state.recipes)} recipes from DB.")
 
-    # ── Restore personalisation state from Supabase ───────────────────────────
+    # ── Restore recent interaction log from Supabase (for /interactions) ──────
+    # Per-user preferences are built on demand per request (get_user_profile),
+    # so no global preference rebuild is needed here anymore.
     persisted = _db.load_recent_interactions(500)
     if persisted:
         interactions.extend(persisted)
-        _rebuild_preferences_from_interactions(app.state.recipes)
         print(f"[startup] Restored {len(persisted)} interactions from Supabase.")
 
     # ── Background tasks (non-blocking) ──────────────────────────────────────
@@ -1683,17 +1716,19 @@ def apply_allergy_filter(recipes: list[dict], allergies: list[str] | None) -> li
 
 
 @app.post("/recommend")
-def recommend(payload: RecommendRequest, request: Request):
+def recommend(
+    payload: RecommendRequest,
+    request: Request,
+    user: dict | None = Depends(get_optional_user),
+):
     ranked = []
     recipes = get_loaded_recipes(request)
     diet = payload.diet
     category = normalize_category(payload.category)
 
-    cook_counts = {}
-    for event in interactions:
-        if event.get("action") == "cook":
-            recipe_code = event.get("recipe_id")
-            cook_counts[recipe_code] = cook_counts.get(recipe_code, 0) + 1
+    # Per-user personalization: preferences + cook history for THIS user only.
+    # Anonymous users get a neutral profile (no cross-user contamination).
+    prefs, cook_counts = get_user_profile(user["id"] if user else None, recipes)
 
     # ── Diet filter ───────────────────────────────────────────────────────────
     if diet:
@@ -1828,13 +1863,14 @@ def recommend(payload: RecommendRequest, request: Request):
         )
         score += random.uniform(0, 1)
 
-        # Personalization bonus: tags + diet + cuisine category learned from cook history
+        # Personalization bonus: tags + diet + cuisine category learned from THIS
+        # user's cook history (prefs is neutral/empty for anonymous users).
         preference_bonus = 0.0
         for tag in recipe.get("tags", []):
-            preference_bonus += min(user_preferences.get(tag, 0), 10) * 0.5
-        preference_bonus += min(user_preferences.get(recipe.get("diet", ""), 0), 10) * 0.5
+            preference_bonus += min(prefs.get(tag, 0), 10) * 0.5
+        preference_bonus += min(prefs.get(recipe.get("diet", ""), 0), 10) * 0.5
         recipe_cat = (recipe.get("category") or "").strip().lower()
-        preference_bonus += min(user_preferences.get(recipe_cat, 0), 10) * 0.4
+        preference_bonus += min(prefs.get(recipe_cat, 0), 10) * 0.4
         score += preference_bonus
 
         # Ingredient match boost (only when ingredient filtering is active).
@@ -2181,23 +2217,12 @@ def meal_plan(payload: MealPlanRequest, request: Request):
 
 
 @app.post("/track")
-def track_interaction(payload: TrackRequest, request: Request):
-    if payload.action == "cook":
-        tracked_id = parse_tracked_recipe_id(payload.recipe_id)
-        if tracked_id is not None:
-            recipes = get_loaded_recipes(request)
-            recipe = next((r for r in recipes if int(r["id"]) == tracked_id), None)
-            if recipe is not None:
-                for tag in recipe.get("tags", []):
-                    if tag in user_preferences:
-                        user_preferences[tag] += 1
-                diet = (recipe.get("diet") or "").strip().lower()
-                if diet in user_preferences:
-                    user_preferences[diet] += 1
-                # Track cuisine category preference
-                cat = (recipe.get("category") or "").strip().lower()
-                if cat in user_preferences:
-                    user_preferences[cat] += 1
+def track_interaction(
+    payload: TrackRequest,
+    request: Request,
+    user: dict | None = Depends(get_optional_user),
+):
+    user_id = user["id"] if user else None
 
     interaction = {
         "action": payload.action,
@@ -2206,9 +2231,13 @@ def track_interaction(payload: TrackRequest, request: Request):
     }
     interactions.append(interaction)
 
-    # Persist to Supabase so personalisation survives server restarts.
-    # Fire-and-forget style — never blocks the response even if Supabase is slow.
-    _db.save_interaction(payload.action, payload.recipe_id)
+    # Persist to Supabase (scoped to this user) so personalisation survives restarts.
+    _db.save_interaction(payload.action, payload.recipe_id, user_id=user_id)
+
+    # A new cook changes this user's profile — drop their cache so the next
+    # /recommend rebuilds it from fresh history.
+    if payload.action == "cook":
+        invalidate_user_profile(user_id)
 
     return interaction
 
