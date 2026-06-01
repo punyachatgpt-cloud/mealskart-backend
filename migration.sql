@@ -41,9 +41,9 @@ $$;
 CREATE TABLE IF NOT EXISTS public.users (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     auth_id             UUID        UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
-    phone               TEXT        NOT NULL,
+    phone               TEXT,
     CONSTRAINT users_phone_unique  UNIQUE (phone),
-    CONSTRAINT users_phone_e164    CHECK  (phone ~ '^\+[1-9]\d{6,14}$'),
+    CONSTRAINT users_phone_e164    CHECK  (phone IS NULL OR phone ~ '^\+[1-9]\d{6,14}$'),
     phone_verified_at   TIMESTAMPTZ,
     email               TEXT,
     CONSTRAINT users_email_unique  UNIQUE (email),
@@ -100,14 +100,16 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-    INSERT INTO public.users (auth_id, phone, phone_verified_at)
+    INSERT INTO public.users (auth_id, phone, phone_verified_at, email)
     VALUES (
         NEW.id,
-        COALESCE(NEW.phone, ''),
-        CASE WHEN NEW.phone_confirmed_at IS NOT NULL
-             THEN NEW.phone_confirmed_at
-             ELSE NOW()
-        END
+        NULLIF(NEW.phone, ''),                       -- NULL for email signups
+        CASE
+            WHEN NEW.phone_confirmed_at IS NOT NULL THEN NEW.phone_confirmed_at
+            WHEN NULLIF(NEW.phone, '') IS NOT NULL   THEN NOW()
+            ELSE NULL
+        END,
+        NEW.email                                    -- populated for email signups
     )
     ON CONFLICT (auth_id) DO NOTHING;
     RETURN NEW;
