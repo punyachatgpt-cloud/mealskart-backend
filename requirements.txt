@@ -18,3 +18,6 @@ gTTS>=2.5.1                   # Google TTS — natural multilingual voice for Co
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 pytest>=8.0.0
+
+# ── Observability ─────────────────────────────────────────────────────────────
+sentry-sdk[fastapi]>=2.0.0     # error tracking (active only when SENTRY_DSN is set)

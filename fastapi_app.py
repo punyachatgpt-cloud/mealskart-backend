@@ -1,7 +1,9 @@
 import asyncio
 import csv
+import logging
 import os
 import random
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -11,7 +13,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 import db as _db
@@ -35,8 +37,35 @@ def _gate_and_log(user: dict | None, feature: str) -> None:
 
 load_dotenv()
 
+# ── Observability ─────────────────────────────────────────────────────────────
+# Structured app logger (Render captures stdout). Configured once.
+log = logging.getLogger("simmer")
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    log.addHandler(_handler)
+    log.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+    log.propagate = False
+
+# Error tracking — opt-in via SENTRY_DSN. No-op (and zero overhead) without it.
+_SENTRY_ON = False
+_sentry_dsn = os.getenv("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            environment=os.getenv("APP_ENV", "development"),
+            traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
+            send_default_pii=False,
+        )
+        _SENTRY_ON = True
+        log.info("Sentry error tracking initialised.")
+    except Exception as exc:
+        log.warning(f"Sentry init skipped: {exc}")
+
 _GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-print(f"[Gemini] Active model: {_GEMINI_MODEL}")
+log.info(f"[Gemini] Active model: {_GEMINI_MODEL}")
 
 app = FastAPI(title="Recipe Recommender API")
 
@@ -54,6 +83,39 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+# ── Request logging + latency (skips the noisy /health probe) ─────────────────
+@app.middleware("http")
+async def _request_logger(request: Request, call_next):
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        dur = (time.perf_counter() - start) * 1000
+        log.warning(f"{request.method} {request.url.path} -> ERROR ({dur:.0f}ms)")
+        raise  # handled + captured by the global exception handler below
+    dur = (time.perf_counter() - start) * 1000
+    if request.url.path != "/health":
+        level = logging.WARNING if (response.status_code >= 500 or dur > 3000) else logging.INFO
+        log.log(level, f"{request.method} {request.url.path} -> {response.status_code} ({dur:.0f}ms)")
+    return response
+
+
+# ── Global safety net for unhandled errors (HTTPException keeps its own handler) ─
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    log.exception(f"Unhandled error on {request.method} {request.url.path}: {exc}")
+    if _SENTRY_ON:
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_exception(exc)
+        except Exception:
+            pass
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Something went wrong on our end. Please try again."},
+    )
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
 # Mounted at /auth/* — all new files, no existing routes changed.
