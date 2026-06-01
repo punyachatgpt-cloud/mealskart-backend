@@ -444,6 +444,8 @@ def email_signup(body: EmailSignupRequest) -> dict[str, Any]:
         })
     except Exception as exc:
         err = str(exc).lower()
+        # Always log the real reason so it shows up in server logs.
+        print(f"[auth] email signup failed for {body.email}: {exc!r}")
         if "already" in err or "registered" in err or "exists" in err:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -454,9 +456,25 @@ def email_signup(body: EmailSignupRequest) -> dict[str, Any]:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Password is too weak — use at least 8 characters.",
             )
+        # Surface common Supabase setup problems with actionable messages.
+        if "signup" in err and "disabled" in err:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Email sign-up isn't enabled yet. (Enable the Email provider in Supabase.)",
+            )
+        if "redirect" in err or "url" in err:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Sign-up redirect URL isn't allowlisted in Supabase. (Add it under URL Configuration.)",
+            )
+        if "smtp" in err or "send" in err or "email" in err or "mailer" in err or "rate" in err:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Couldn't send the verification email — custom SMTP isn't configured in Supabase.",
+            )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not create the account right now. Please try again.",
+            detail=f"Could not create the account: {str(exc)[:160]}",
         )
 
     auth_user = getattr(resp, "user", None)
