@@ -1,0 +1,73 @@
+<!--
+  Simmer — "Confirm signup" email template.
+  Paste into: Supabase Dashboard → Authentication → Email Templates → "Confirm signup".
+  Subject line: Confirm your email for Simmer
+  Supabase variables used: {{ .ConfirmationURL }}, {{ .Email }}
+-->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+</head>
+<body style="margin:0;padding:0;background:#F4EEE3;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F4EEE3;padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#FFFDF9;border:1px solid #EAD9C0;border-radius:20px;overflow:hidden;">
+          <!-- Brand bar -->
+          <tr>
+            <td style="padding:28px 32px 8px;text-align:center;">
+              <div style="font-family:Georgia,'Times New Roman',serif;font-size:26px;font-weight:800;letter-spacing:-0.02em;color:#1C1008;">
+                <span style="color:#C8690E;">●</span> Simmer
+              </div>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding:8px 32px 4px;">
+              <h1 style="margin:16px 0 8px;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:800;color:#1C1008;line-height:1.2;">
+                Confirm your email
+              </h1>
+              <p style="margin:0 0 8px;font-size:15px;line-height:1.6;color:#6B4C2A;">
+                Welcome to Simmer! Tap the button below to verify
+                <strong style="color:#1C1008;">{{ .Email }}</strong> and finish setting up your account.
+              </p>
+            </td>
+          </tr>
+          <!-- CTA -->
+          <tr>
+            <td style="padding:20px 32px 8px;" align="center">
+              <a href="{{ .ConfirmationURL }}"
+                 style="display:inline-block;background:#C8690E;color:#ffffff;text-decoration:none;
+                        font-size:16px;font-weight:700;padding:14px 32px;border-radius:12px;">
+                Confirm my email →
+              </a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 32px 24px;">
+              <p style="margin:12px 0 0;font-size:13px;line-height:1.6;color:#9B7553;">
+                If the button doesn't work, copy and paste this link into your browser:
+              </p>
+              <p style="margin:6px 0 0;font-size:12px;line-height:1.5;color:#C8690E;word-break:break-all;">
+                {{ .ConfirmationURL }}
+              </p>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="padding:18px 32px;border-top:1px solid #EAD9C0;background:#FBF6EE;">
+              <p style="margin:0;font-size:12px;line-height:1.6;color:#9B7553;">
+                Didn't create a Simmer account? You can safely ignore this email — no account will be created.
+              </p>
+              <p style="margin:8px 0 0;font-size:12px;color:#B79A78;">© Simmer · Cook by craving</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
