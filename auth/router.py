@@ -36,7 +36,13 @@ load_dotenv()
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-_E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+_E164_RE  = re.compile(r"^\+[1-9]\d{6,14}$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PASSWORD_MIN = 8
+
+# Where the password-reset / email-confirmation links should land the user.
+# Override with APP_URL in the environment (e.g. https://simmer.app).
+_APP_URL = os.getenv("APP_URL", "http://localhost:3000").rstrip("/")
 
 # Rate-limit windows (enforced in otp_requests table)
 _OTP_PHONE_LIMIT   = 3    # sends per phone per window
@@ -87,6 +93,49 @@ class OnboardingRequest(BaseModel):
     diet: str | None = None
     cuisines: list[str] = []
     skipped: bool = False
+
+
+# ── Email + password auth models ────────────────────────────────────────────────
+
+class _EmailMixin(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not _EMAIL_RE.match(v) or len(v) > 254:
+            raise ValueError("Enter a valid email address.")
+        return v
+
+
+class _PasswordMixin(BaseModel):
+    password: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < _PASSWORD_MIN:
+            raise ValueError(f"Password must be at least {_PASSWORD_MIN} characters.")
+        if len(v) > 72:  # bcrypt hard limit used by Supabase/GoTrue
+            raise ValueError("Password must be 72 characters or fewer.")
+        return v
+
+
+class EmailSignupRequest(_EmailMixin, _PasswordMixin):
+    display_name: str | None = None
+
+
+class EmailLoginRequest(_EmailMixin):
+    password: str  # no strength check on login — just presence
+
+
+class PasswordResetRequest(_EmailMixin):
+    pass
+
+
+class UpdatePasswordRequest(_PasswordMixin):
+    access_token: str  # recovery token from the reset-link redirect
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -168,6 +217,62 @@ def _safe_user_response(user: dict) -> dict:
         "metadata", "created_at",
     }
     return {k: v for k, v in user.items() if k in safe_keys}
+
+
+def _get_or_create_user_row(
+    auth_id: str,
+    *,
+    email: str | None = None,
+    display_name: str | None = None,
+) -> dict:
+    """
+    Fetch the public.users row for a Supabase auth user, creating it if the
+    handle_new_auth_user trigger hasn't fired yet (race on first request).
+    Mirrors the phone-verify path so email + phone users are consistent.
+    """
+    result = (
+        supabase_admin.table("users")
+        .select("*").eq("auth_id", auth_id).maybe_single().execute()
+    )
+    user_row: dict | None = result.data
+
+    if not user_row:
+        payload: dict[str, Any] = {
+            "id": str(uuid4()),
+            "auth_id": auth_id,
+            "onboarding_complete": False,
+        }
+        if email:
+            payload["email"] = email
+        if display_name and display_name.strip():
+            payload["display_name"] = display_name.strip()[:40]
+        try:
+            ins = supabase_admin.table("users").insert(payload).execute()
+            user_row = ins.data[0] if ins.data else None
+        except Exception as exc:  # duplicate key = trigger already created it
+            print(f"[auth] users insert fallback (non-fatal): {exc}")
+            again = (
+                supabase_admin.table("users")
+                .select("*").eq("auth_id", auth_id).maybe_single().execute()
+            )
+            user_row = again.data
+
+    if not user_row:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not retrieve or create user record.",
+        )
+
+    # Backfill email if the trigger created the row without it
+    if email and not user_row.get("email"):
+        try:
+            supabase_admin.table("users").update({"email": email}) \
+                .eq("id", user_row["id"]).execute()
+            user_row["email"] = email
+        except Exception:
+            pass
+
+    return user_row
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -318,6 +423,178 @@ def verify_otp(body: OtpVerifyRequest, request: Request) -> dict[str, Any]:
         "is_new_user":  is_new_user,
         "user":         _safe_user_response(user_row),
     }
+
+
+# ── Email + password auth ───────────────────────────────────────────────────────
+
+@router.post("/email-signup", status_code=status.HTTP_200_OK)
+def email_signup(body: EmailSignupRequest) -> dict[str, Any]:
+    """
+    Create an account with email + password.
+
+    With Supabase "Confirm email" ON, this sends a verification email and returns
+    NO session — the client shows a "check your inbox" state. The user confirms,
+    then signs in via /email-login.
+    """
+    try:
+        resp = supabase_admin.auth.sign_up({
+            "email": body.email,
+            "password": body.password,
+            "options": {"email_redirect_to": f"{_APP_URL}/login.html?verified=1"},
+        })
+    except Exception as exc:
+        err = str(exc).lower()
+        if "already" in err or "registered" in err or "exists" in err:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this email already exists. Try signing in.",
+            )
+        if "password" in err:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Password is too weak — use at least 8 characters.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not create the account right now. Please try again.",
+        )
+
+    auth_user = getattr(resp, "user", None)
+    # Provision the public.users row early so display_name/email are stored.
+    if auth_user and auth_user.id:
+        try:
+            _get_or_create_user_row(
+                str(auth_user.id), email=body.email, display_name=body.display_name
+            )
+        except Exception as exc:
+            print(f"[auth] signup row provision failed (non-fatal): {exc}")
+
+    # Session is only present if email confirmation is disabled.
+    session = getattr(resp, "session", None)
+    if session and session.access_token and auth_user:
+        user_row = _get_or_create_user_row(
+            str(auth_user.id), email=body.email, display_name=body.display_name
+        )
+        return {
+            "access_token": session.access_token,
+            "token_type": "bearer",
+            "needs_verification": False,
+            "is_new_user": True,
+            "user": _safe_user_response(user_row),
+        }
+
+    return {
+        "needs_verification": True,
+        "message": "Account created. Check your inbox to verify your email, then sign in.",
+    }
+
+
+@router.post("/email-login", status_code=status.HTTP_200_OK)
+def email_login(body: EmailLoginRequest) -> dict[str, Any]:
+    """Sign in with email + password. Returns a session JWT on success."""
+    try:
+        resp = supabase_admin.auth.sign_in_with_password(
+            {"email": body.email, "password": body.password}
+        )
+    except Exception as exc:
+        err = str(exc).lower()
+        if "not confirmed" in err or "confirm" in err:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Please verify your email first — check your inbox.",
+            )
+        # Invalid credentials → generic message (don't reveal which field is wrong)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password.",
+        )
+
+    session = getattr(resp, "session", None)
+    auth_user = getattr(resp, "user", None)
+    if not session or not session.access_token or not auth_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password.",
+        )
+
+    user_row = _get_or_create_user_row(str(auth_user.id), email=body.email)
+
+    # Soft-delete guard (mirrors get_current_user)
+    if user_row.get("deleted_at") is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account has been deactivated.",
+        )
+
+    try:
+        supabase_admin.table("users") \
+            .update({"last_seen_at": datetime.now(timezone.utc).isoformat()}) \
+            .eq("id", user_row["id"]).execute()
+    except Exception:
+        pass
+
+    return {
+        "access_token": session.access_token,
+        "token_type": "bearer",
+        "is_new_user": not user_row.get("onboarding_complete", False),
+        "user": _safe_user_response(user_row),
+    }
+
+
+@router.post("/request-password-reset", status_code=status.HTTP_200_OK)
+def request_password_reset(body: PasswordResetRequest, request: Request) -> dict[str, Any]:
+    """
+    Send a password-reset email. Always returns 200 with a generic message so we
+    never reveal whether an email is registered (anti-enumeration).
+    """
+    try:
+        supabase_admin.auth.reset_password_for_email(
+            body.email,
+            {"redirect_to": f"{_APP_URL}/reset-password.html"},
+        )
+    except Exception as exc:
+        # Log but still return the generic success message.
+        print(f"[auth] reset_password_for_email failed (non-fatal): {exc}")
+
+    return {"message": "If an account exists for that email, a reset link is on its way."}
+
+
+@router.post("/update-password", status_code=status.HTTP_200_OK)
+def update_password(body: UpdatePasswordRequest) -> dict[str, Any]:
+    """
+    Complete a password reset. The client passes the recovery `access_token` it
+    received in the reset-link redirect (URL fragment) plus the new password.
+    We resolve the user from that token, then set the new password via admin API.
+    """
+    try:
+        auth_resp = supabase_admin.auth.get_user(body.access_token)
+        auth_user = getattr(auth_resp, "user", None)
+    except Exception:
+        auth_user = None
+
+    if not auth_user or not auth_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This reset link is invalid or has expired. Request a new one.",
+        )
+
+    try:
+        supabase_admin.auth.admin.update_user_by_id(
+            str(auth_user.id), {"password": body.password}
+        )
+    except Exception as exc:
+        err = str(exc).lower()
+        if "password" in err:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Password is too weak — use at least 8 characters.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not update the password right now. Please try again.",
+        )
+
+    return {"message": "Password updated. You can now sign in with your new password."}
 
 
 @router.get("/me", status_code=status.HTTP_200_OK)
