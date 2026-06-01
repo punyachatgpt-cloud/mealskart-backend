@@ -1,0 +1,3 @@
+## 2026-06-01 - [Accessibility & Modal Focus Management]
+**Learning:** Selection buttons that toggle state should use `aria-pressed` to communicate their state to screen readers. Grouped selections benefit from `role="group"` with descriptive `aria-label`s. Dynamically updated content requires `aria-live` to be announced. Modals must manage focus by capturing the triggering element, moving focus into the modal on open, and restoring it on close, while supporting the `Escape` key.
+**Action:** Always check for ARIA state attributes on toggle elements and implement focus traps or restoration for modal/dialog interactions.
