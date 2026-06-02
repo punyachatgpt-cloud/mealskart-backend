@@ -28,6 +28,7 @@ CATEGORY_POOLS: dict[str, list[str]] = {
     "rice":     ["photo-1536304929831-ee1ca9d44906", "photo-1516684732162-798a0062be99", "photo-1603133872878-684f208fb84b"],
     "bread":    ["photo-1565557623262-b51c2513a641", "photo-1610057099431-d73a1c9d2f2f", "photo-1574894709920-11b28e7367e3"],
     "southidli":["photo-1540189549336-e6e99c3679fe", "photo-1668236543090-82eba5ee5976", "photo-1630383249896-424e482df921"],
+    "breakfast":["photo-1528207776546-365bb710ee93", "photo-1567620905732-2d1ec7ab7445", "photo-1490474418585-ba9bad8fd0ea"],
     "chicken":  ["photo-1600891964599-f61ba0e24092", "photo-1610057099443-fdd4fa6d6b4f", "photo-1604908554007-c9a09d76eee3"],
     "seafood":  ["photo-1559847844-5315695dadae", "photo-1580476262798-bddd9f4b7369", "photo-1535140728325-a4d3707eee61"],
     "egg":      ["photo-1525351484163-7529414344d8", "photo-1482049016688-2d3e1b311543", "photo-1607103058027-4c5a5a1f1f01"],
@@ -55,6 +56,9 @@ _kw("biryani", "biryani", "pulao", "pulav", "tehri")
 _kw("rice", "rice", "khichdi", "khichuri", "pongal", "chawal")
 _kw("bread", "roti", "chapati", "naan", "paratha", "puri", "poori", "kulcha", "bhatura", "thepla", "phulka")
 _kw("southidli", "idli", "dosa", "uttapam", "upma", "poha", "vada", "appam", "pesarattu")
+_kw("breakfast", "pancake", "pancakes", "oatmeal", "oats", "oat", "porridge", "cereal",
+    "granola", "waffle", "waffles", "crepe", "crepes", "poffertjes", "blini", "muesli",
+    "cornflakes", "toast")
 _kw("chicken", "chicken", "mutton", "lamb", "beef", "pork", "kebab", "tikka", "tandoori", "murgh", "seekh")
 _kw("seafood", "fish", "prawn", "prawns", "shrimp", "crab", "machli", "macher", "pomfret")
 _kw("egg", "egg", "omelette", "omelet", "anda", "bhurji")
