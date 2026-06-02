@@ -17,91 +17,96 @@ import random
 random.seed(42)
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "supabase", "seed_extra_recipes.sql")
+OUT_UPDATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   "supabase", "update_extra_recipe_steps.sql")
 
 # ── Method step templates (use {main}) ───────────────────────────────────────
 METHODS = {
     "gravy": [
-        "Heat oil and saute chopped onion, ginger and garlic until golden",
-        "Add tomato puree and cook until the oil separates",
-        "Stir in turmeric, red chilli, coriander and garam masala",
-        "Add {main} with a little water and simmer until cooked through",
-        "Finish with cream or coriander and serve hot",
+        "Heat 2 tbsp oil in a heavy pan; add 1 large finely chopped onion and saute 5-6 minutes until golden brown",
+        "Add 1 tbsp ginger-garlic paste and cook 1 minute until the raw smell disappears",
+        "Add 2 pureed tomatoes (or 3 tbsp tomato paste) and cook 4-5 minutes until the oil separates at the edges",
+        "Stir in 1/2 tsp turmeric, 1 tsp red chilli powder, 1 tsp coriander powder and 3/4 tsp salt; cook 1 minute",
+        "Add the {main} with about 3/4 cup water, cover and simmer 10-12 minutes until cooked through and the gravy thickens",
+        "Sprinkle 1/2 tsp garam masala, swirl in 2 tbsp cream or whisked yogurt, and finish with chopped coriander; serve hot",
     ],
     "dry": [
-        "Heat oil and crackle cumin seeds",
-        "Add {main} and saute on medium heat",
-        "Sprinkle turmeric, red chilli, coriander powder and salt",
-        "Cover and cook until tender, stirring occasionally",
-        "Garnish with fresh coriander and serve",
+        "Heat 2 tbsp oil in a kadai on medium heat and crackle 1 tsp cumin seeds",
+        "Add the {main} and saute on medium-high for 3-4 minutes",
+        "Sprinkle 1/2 tsp turmeric, 1 tsp red chilli powder, 1.5 tsp coriander powder and 3/4 tsp salt; toss to coat evenly",
+        "Cover and cook on low 8-10 minutes, stirring every couple of minutes, until tender and lightly caramelised",
+        "Uncover and raise the heat for 2 minutes to dry off moisture",
+        "Finish with 1/2 tsp garam masala and a handful of fresh coriander; serve hot",
     ],
     "dal": [
-        "Pressure cook {main} with turmeric and salt until soft",
-        "Prepare a tempering of ghee, cumin, garlic, dry chilli and asafoetida",
+        "Rinse 1 cup {main} and pressure cook with 3 cups water, 1/2 tsp turmeric and 3/4 tsp salt for 3-4 whistles until soft",
+        "Whisk the dal smooth and add hot water to reach a pourable consistency; keep on a low simmer",
+        "For the tempering, heat 2 tbsp ghee and add 1 tsp cumin, 4 sliced garlic cloves, 2 dry red chillies and a pinch of asafoetida; fry until golden",
         "Pour the sizzling tempering over the dal",
-        "Simmer for five minutes and adjust consistency",
-        "Serve hot with rice or roti",
+        "Simmer 5 minutes, finish with chopped coriander and a squeeze of lemon; serve hot with rice or roti",
     ],
     "rice": [
-        "Soak and parboil basmati rice with whole spices, then drain",
-        "Cook a {main} masala with onion, tomato and yogurt",
-        "Layer the rice over the masala and scatter fried onions and mint",
-        "Cover and cook on dum on low heat for twenty minutes",
-        "Fluff gently and serve with raita",
+        "Soak 1.5 cups basmati rice for 20 minutes; boil in 4-5 cups salted water with whole spices until 70% cooked, then drain",
+        "In 2 tbsp ghee, cook a {main} masala with 1 sliced onion, 1 tbsp ginger-garlic, 2 chopped tomatoes, 1/2 cup yogurt and 1 tbsp biryani spices until thick",
+        "Layer the par-boiled rice over the masala; scatter fried onions, mint, and 2 tbsp warm milk steeped with saffron",
+        "Cover tightly (seal the lid with dough or foil) and cook on dum on the lowest heat 18-20 minutes",
+        "Rest 5 minutes, then fluff gently with a fork and serve with raita",
     ],
     "bread": [
-        "Knead a soft dough with the flour, a little oil and water; rest 20 minutes",
-        "Divide into balls and roll out, stuffing with {main} if required",
-        "Cook on a hot tawa, brushing with ghee, until golden spots appear",
-        "Serve warm with curd or curry",
+        "Knead a soft dough with 2 cups flour, 1/2 tsp salt, 1 tsp oil and about 3/4 cup water; cover and rest 20 minutes",
+        "Divide into 6 balls; roll out, stuffing with {main} if required, and dust with dry flour",
+        "Cook on a hot tawa 1-2 minutes per side, brushing with ghee, until golden brown spots appear and it puffs",
+        "Serve warm with curd, pickle or curry",
     ],
     "tiffin": [
-        "Soak rice and lentils, then grind to a smooth batter and ferment overnight",
-        "Mix in {main} and season the batter",
-        "Pour onto a hot greased griddle and spread or steam as needed",
-        "Cook until golden and crisp (or fluffy)",
+        "Soak 2 cups rice with 1/2 cup urad dal for 4-6 hours; grind to a smooth batter and ferment overnight",
+        "Mix in the {main} with 3/4 tsp salt and a little water to a pourable (or idli) consistency",
+        "Heat a greased griddle (or idli steamer); pour and spread thin, or steam 10-12 minutes",
+        "Cook until golden and crisp, or fluffy and set",
         "Serve hot with coconut chutney and sambar",
     ],
     "fry": [
-        "Prepare the {main} mixture with spices and bind well",
-        "Shape into portions or coat in batter",
-        "Deep fry on medium heat until golden and crisp",
-        "Drain on paper and serve hot with chutney",
+        "Mix the {main} with 1 finely chopped onion, 1 green chilli, 1/2 tsp turmeric, 1/2 tsp chilli powder and salt; bind well",
+        "Shape into even portions, or dip in a thick gram-flour batter",
+        "Heat oil to 170-180C and fry in small batches 3-4 minutes until golden and crisp",
+        "Drain on paper towels; serve hot with green chutney",
     ],
     "chaat": [
-        "Assemble the {main} base in a bowl",
-        "Top with whisked yogurt, tamarind and green chutneys",
-        "Sprinkle chaat masala, roasted cumin, sev and chopped onion",
-        "Serve immediately while crisp",
+        "Add the {main} base to a serving bowl",
+        "Drizzle 2 tbsp whisked yogurt, 1 tbsp tamarind chutney and 1 tsp green chutney",
+        "Sprinkle 1/2 tsp chaat masala, 1/4 tsp roasted cumin, a handful of sev and 2 tbsp chopped onion",
+        "Finish with coriander and a squeeze of lemon; serve immediately while crisp",
     ],
     "milksweet": [
-        "Cook {main} gently with milk and ghee on low heat",
-        "Add sugar and cardamom and keep stirring",
-        "Cook until thick and aromatic",
-        "Garnish with chopped nuts and serve warm or chilled",
+        "Cook the {main} with 2 cups full-fat milk and 1 tbsp ghee on low heat, stirring often so it doesn't catch",
+        "When it thickens, add 1/2 cup sugar and 1/4 tsp cardamom powder; keep stirring 8-10 minutes",
+        "Cook until it leaves the sides of the pan and turns glossy",
+        "Garnish with 2 tbsp chopped nuts; serve warm or chilled",
     ],
     "syrupsweet": [
-        "Make a smooth batter or dough for the {main}",
-        "Fry on low-medium heat until golden",
-        "Soak in warm cardamom sugar syrup until plump",
+        "Make a smooth batter or dough for the {main} and rest 10 minutes",
+        "Boil 1 cup sugar with 1/2 cup water, 2 cardamoms and a few saffron strands to a 1-string syrup; keep warm",
+        "Fry on low-medium heat (about 160C) until evenly golden, turning often",
+        "Soak the hot fritters in the warm syrup 15-20 minutes until plump",
         "Rest and serve",
     ],
     "drink": [
-        "Add {main} to a blender with chilled water or milk",
-        "Blend until smooth and frothy",
-        "Sweeten or season to taste",
+        "Add the {main} to a blender with 1 cup chilled water or milk",
+        "Blend 30-40 seconds until smooth and frothy",
+        "Add 2-3 tsp sugar to taste and blend again",
         "Pour over ice and serve chilled",
     ],
     "chai": [
-        "Boil water with tea leaves, grated ginger and crushed spices",
-        "Add milk and sugar",
-        "Simmer to the strength you like",
+        "Boil 1 cup water with 1 tsp tea leaves, 1 tsp grated ginger and 2 crushed cardamoms",
+        "Add 3/4 cup milk and 2 tsp sugar",
+        "Simmer 3-4 minutes to the strength you like",
         "Strain into cups and serve hot",
     ],
     "bake": [
-        "Mix the batter (or knead and proof the dough) for the {main}",
-        "Transfer to a greased tin or tray",
-        "Bake at 180C until risen and golden",
-        "Cool before slicing and serving",
+        "Make the batter for the {main}: whisk 1.5 cups flour with 1 tsp baking powder, 1/2 cup sugar and the wet ingredients until smooth",
+        "Pour or press into a greased tin lined with parchment",
+        "Bake in a preheated 180C oven for 25-30 minutes until risen and a skewer comes out clean",
+        "Cool 10 minutes before slicing and serving",
     ],
 }
 
@@ -430,6 +435,25 @@ def main() -> int:
     with open(OUT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"Wrote {len(rows)} recipes to {OUT}")
+
+    # ── Companion UPDATE: refresh steps + ingredients on rows that already exist ──
+    # (the INSERT above skips existing names, so run this to upgrade recipes that
+    #  were seeded before the detailed-step rewrite). Matches by name, only touches
+    #  these generated recipes.
+    up = []
+    up.append("-- Auto-generated: upgrades steps + ingredients for the curated recipes")
+    up.append("-- already in public.recipes (the seed INSERT skips existing names).")
+    up.append("-- Safe to re-run; only updates rows whose name matches. Run in Supabase SQL editor.\n")
+    up.append("update public.recipes r")
+    up.append("set steps = v.steps, ingredients = v.ingredients")
+    up.append("from (values")
+    uvals = [f"    ('{esc(r['name'])}', '{esc(r['steps'])}', '{esc(r['ingredients'])}')" for r in rows]
+    up.append(",\n".join(uvals))
+    up.append(") as v(name, steps, ingredients)")
+    up.append("where lower(r.name) = lower(v.name);")
+    with open(OUT_UPDATE, "w", encoding="utf-8") as f:
+        f.write("\n".join(up) + "\n")
+    print(f"Wrote UPDATE for {len(rows)} recipes to {OUT_UPDATE}")
     # quick category breakdown
     from collections import Counter
     print(Counter(r["category"] for r in rows))
