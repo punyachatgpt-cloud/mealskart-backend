@@ -34,6 +34,14 @@ def _row_to_dict(row: dict) -> dict:
         for i in (d.get("ingredients") or "").split(",")
         if i.strip()
     ]
+    # Auto-resolve a correct image for EVERY recipe (existing + future) so we
+    # never serve a missing or mismatched photo. Centralised here = scales
+    # automatically as new recipes are added.
+    try:
+        from recipe_images import resolve_image
+        d["image_url"] = resolve_image(d.get("name"), d.get("image_url"), d.get("id"))
+    except Exception:
+        pass
     return d
 
 
