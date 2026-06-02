@@ -1276,6 +1276,26 @@ def _calc_difficulty(steps_text: str, time_min: int) -> str:
     return "medium"
 
 
+def _split_steps(steps_text: str) -> list[str]:
+    """
+    Split a recipe's ';'-separated steps into a clean list, merging any
+    header-only step (a label that ends with ':', e.g. "Make the orange sauce:")
+    into the following instruction so no step card is left content-less.
+    """
+    parts = [s.strip() for s in (steps_text or "").split(";") if s.strip()]
+    out: list[str] = []
+    i = 0
+    while i < len(parts):
+        cur = parts[i]
+        if cur.endswith(":") and i + 1 < len(parts):
+            out.append(f"{cur} {parts[i + 1]}")
+            i += 2
+        else:
+            out.append(cur)
+            i += 1
+    return out
+
+
 def recipe_summary(recipe) -> dict:
     enrichment = get_recipe_enrichment(recipe)
     # For MealDB records seeded before the difficulty fix, compute on the fly
@@ -2306,7 +2326,7 @@ def get_recipe(id: int, request: Request):
         raise HTTPException(status_code=404, detail="Recipe not found")
 
     enrichment = get_recipe_enrichment(recipe)
-    steps = [step.strip() for step in recipe["steps"].split(";") if step.strip()]
+    steps = _split_steps(recipe["steps"])
     return {
         "id": int(recipe["id"]),
         "name": recipe["name"],
