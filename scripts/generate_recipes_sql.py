@@ -346,12 +346,15 @@ for s, m, method in [("Shahi Paneer", "paneer and cashew", "gravy"), ("Malai Kof
         ("Chole Masala", "chickpeas", "gravy"), ("Pindi Chole", "chickpeas", "gravy"),
         ("Kadhi Pakora", "yogurt and gram flour fritters", "gravy"), ("Veg Jalfrezi", "mixed vegetables", "dry"),
         ("Stuffed Capsicum", "bell peppers and potato", "dry"), ("Methi Malai Matar", "fenugreek, cream and peas", "gravy"),
-        ("Paneer Bhurji", "crumbled paneer", "dry"), ("Egg Bhurji", "eggs", "dry"),
+        ("Paneer Bhurji", "crumbled paneer", "dry"),
         ("Veg Kofta Curry", "vegetable dumplings", "gravy"), ("Mushroom Matar Masala", "mushroom and peas", "gravy"),
         ("Achari Aloo", "potato and pickle spices", "dry"), ("Sev Tamatar", "tomato and sev", "gravy"),
         ("Gatte Ki Sabzi", "gram flour dumplings", "gravy"), ("Ker Sangri", "desert beans and berries", "dry"),
         ("Undhiyu", "mixed winter vegetables", "gravy"), ("Litti Chokha", "stuffed wheat balls and mash", "bake")]:
     add(s, "veg", "north-indian", method, m, random.choice([25, 30, 35, 40]), random.choice([240, 300, 360]), "medium")
+
+# Egg dishes are non-veg (egg is not vegetarian in this app's diet model).
+add("Egg Bhurji", "non-veg", "north-indian", "dry", "eggs", 20, 280, "easy")
 
 for s, m, method in [("Kerala Parotta", "refined flour", "bread"), ("Malabar Parotta", "refined flour", "bread"),
         ("Vegetable Stew", "mixed vegetables and coconut milk", "gravy"), ("Puttu", "rice flour and coconut", "tiffin"),
