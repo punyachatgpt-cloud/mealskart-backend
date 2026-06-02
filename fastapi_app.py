@@ -1510,6 +1510,72 @@ _CATEGORY_KEYWORD_MAP: dict[str, str] = {
     "manchurian": "chinese",
     "noodles": "chinese",
     "fried rice": "chinese",
+    # ── Indian regional cuisines → nearest available category ──────────────────
+    # North / West / East / Himalayan regions → north-indian
+    "punjabi": "north-indian",
+    "mughlai": "north-indian",
+    "awadhi": "north-indian",
+    "lucknowi": "north-indian",
+    "kashmiri": "north-indian",
+    "rajasthani": "north-indian",
+    "marwari": "north-indian",
+    "gujarati": "north-indian",
+    "kathiyawadi": "north-indian",
+    "sindhi": "north-indian",
+    "maharashtrian": "north-indian",
+    "marathi": "north-indian",
+    "bengali": "north-indian",
+    "bangla": "north-indian",
+    "bihari": "north-indian",
+    "odia": "north-indian",
+    "oriya": "north-indian",
+    "assamese": "north-indian",
+    "northeast": "north-indian",
+    "naga": "north-indian",
+    "garhwali": "north-indian",
+    "kumaoni": "north-indian",
+    "pahari": "north-indian",
+    "himachali": "north-indian",
+    "uttarakhandi": "north-indian",
+    "dilli": "north-indian",
+    "delhi": "north-indian",
+    "amritsari": "north-indian",
+    # South / Coastal regions → south-indian
+    "tamil": "south-indian",
+    "chettinad": "south-indian",
+    "kerala": "south-indian",
+    "keralan": "south-indian",
+    "malabar": "south-indian",
+    "andhra": "south-indian",
+    "telugu": "south-indian",
+    "hyderabadi": "south-indian",
+    "karnataka": "south-indian",
+    "kannada": "south-indian",
+    "udupi": "south-indian",
+    "mangalorean": "south-indian",
+    "coorg": "south-indian",
+    "goan": "south-indian",
+    "konkani": "south-indian",
+    "tamilnadu": "south-indian",
+    # More international cuisines → continental (closest available)
+    "spanish": "continental",
+    "greek": "continental",
+    "lebanese": "continental",
+    "turkish": "continental",
+    "arabic": "continental",
+    "middle eastern": "continental",
+    "american": "continental",
+    "german": "continental",
+    "english": "continental",
+    "british": "continental",
+    "portuguese": "continental",
+    "moroccan": "continental",
+    "indonesian": "continental",
+    "malaysian": "continental",
+    "filipino": "continental",
+    "burmese": "continental",
+    "nepali": "north-indian",
+    "tibetan": "chinese",
 }
 
 # Maps user-typed diet terms to internal diet values
@@ -1669,10 +1735,17 @@ def search_recipes(
 
         # ── 1. Category / cuisine intent ─────────────────────────────────────
         if target_category:
-            if recipe_cat == target_category:
-                score = 110
+            # A dish that literally names the region/cuisine is the best match
+            # (e.g. "Hyderabadi Biryani" for "hyderabadi", "Sarson Ka Saag" for
+            # "punjabi" via name word). Rank those above the broad category bucket.
+            if any(w in name_words for w in words):
+                score = 115
             elif any(w in name_lower for w in words):
-                score = 70
+                score = 95
+            elif recipe_cat == target_category:
+                score = 80
+            elif any(w in ing_text for w in words):
+                score = 40
             else:
                 continue
 
