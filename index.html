@@ -93,6 +93,11 @@
       color: #0f4c31;
     }
 
+    .choice-btn:focus-visible, .action:focus-visible, .card:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .action {
       width: 100%;
       border: none;
@@ -312,8 +317,8 @@
       <button class="action" id="suggestBtn">Get Suggestion</button>
       <button class="action secondary" id="decideBtn">Decide For Me</button>
     </section>
-    <p class="status" id="statusText"></p>
-    <p class="ready-text" id="readyText">Your quick meal is ready</p>
+    <p class="status" id="statusText" aria-live="polite"></p>
+    <p class="ready-text" id="readyText" aria-live="polite">Your quick meal is ready</p>
     <p class="tap-hint" id="tapHint">Tap a dish to start cooking</p>
 
     <section class="results" id="results"></section>
@@ -431,6 +436,8 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("role", "button");
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,9 +450,16 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const openModal = () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        };
+        card.addEventListener("click", openModal);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openModal();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
@@ -539,6 +553,11 @@
     closeModalBtn.addEventListener("click", closeRecipeModal);
     recipeModal.addEventListener("click", (event) => {
       if (event.target === recipeModal) {
+        closeRecipeModal();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && recipeModal.classList.contains("open")) {
         closeRecipeModal();
       }
     });
