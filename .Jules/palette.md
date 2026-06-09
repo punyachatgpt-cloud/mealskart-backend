@@ -1,0 +1,3 @@
+## 2026-06-09 - Accessibility and Keyboard Navigation Overhaul
+**Learning:** For a better micro-UX, interactive elements like recipe cards should be semantic and navigable. Using `role="button"` and `tabindex="0"` on cards, coupled with `Enter`/`Space` listeners, ensures keyboard parity. Managing focus context (storing `activeElement` and returning focus) is crucial for non-disruptive modal interactions.
+**Action:** Always wrap choice buttons in a `role="group"` with an associated label. Use `aria-pressed` to communicate selection state. Ensure modals have `role="dialog"`, `aria-modal="true"`, and handle `Escape` and focus management.
