@@ -250,6 +250,14 @@
       cursor: pointer;
     }
 
+    .choice-btn:focus-visible,
+    .action:focus-visible,
+    .card:focus-visible,
+    .close-btn:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .step-label {
       font-size: 0.88rem;
       color: var(--muted);
@@ -320,10 +328,10 @@
   </main>
 
   <div class="modal-overlay" id="recipeModal">
-    <section class="modal">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalDishName">
       <div class="modal-head">
         <h2 class="modal-title" id="modalDishName">Recipe</h2>
-        <button class="close-btn" id="closeModalBtn">Close</button>
+        <button class="close-btn" id="closeModalBtn" aria-label="Close modal">Close</button>
       </div>
       <p class="step-label" id="stepCountLabel">Step 1</p>
       <p class="step-text" id="stepText">Loading...</p>
@@ -361,6 +369,7 @@
     const closeModalBtn = document.getElementById("closeModalBtn");
 
     let modalSteps = [];
+    let lastActiveElement = null;
     let currentStepIndex = 0;
     const LAST_MODE_KEY = "foodai_last_mode";
 
@@ -393,12 +402,15 @@
 
     function setSelected(group, value) {
       document.querySelectorAll(`[data-group="${group}"]`).forEach((btn) => {
-        btn.classList.toggle("selected", btn.dataset.value === value);
+        const isSelected = btn.dataset.value === value;
+        btn.classList.toggle("selected", isSelected);
+        btn.setAttribute("aria-pressed", isSelected);
       });
     }
 
     function bindChoiceButtons() {
       document.querySelectorAll(".choice-btn").forEach((btn) => {
+        btn.setAttribute("aria-pressed", btn.classList.contains("selected"));
         btn.addEventListener("click", () => {
           const { group, value } = btn.dataset;
           if (group === "time") {
@@ -431,6 +443,9 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("aria-label", `View recipe for ${item.name}`);
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,9 +458,16 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const openModal = () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        };
+        card.addEventListener("click", openModal);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openModal();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
@@ -481,7 +503,9 @@
         modalSteps = Array.isArray(recipe.steps) ? recipe.steps : [];
         currentStepIndex = 0;
         updateModalStep();
+        lastActiveElement = document.activeElement;
         recipeModal.classList.add("open");
+        closeModalBtn.focus();
       } catch (error) {
         statusText.textContent = "Could not load cooking steps right now.";
       }
@@ -489,6 +513,9 @@
 
     function closeRecipeModal() {
       recipeModal.classList.remove("open");
+      if (lastActiveElement) {
+        lastActiveElement.focus();
+      }
     }
 
     async function getSuggestions(mode = "normal") {
@@ -539,6 +566,11 @@
     closeModalBtn.addEventListener("click", closeRecipeModal);
     recipeModal.addEventListener("click", (event) => {
       if (event.target === recipeModal) {
+        closeRecipeModal();
+      }
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && recipeModal.classList.contains("open")) {
         closeRecipeModal();
       }
     });
