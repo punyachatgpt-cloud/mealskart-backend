@@ -87,6 +87,11 @@
       transform: scale(0.98);
     }
 
+    .choice-btn:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .choice-btn.selected {
       border-color: var(--accent);
       background: var(--accent-soft);
@@ -125,6 +130,11 @@
       cursor: not-allowed;
     }
 
+    .action:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     .status {
       color: var(--muted);
       margin: 10px 2px 0;
@@ -159,6 +169,11 @@
       padding: 14px;
       box-shadow: var(--shadow);
       cursor: pointer;
+    }
+
+    .card:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: -2px;
     }
 
     .card.highlighted {
@@ -312,18 +327,18 @@
       <button class="action" id="suggestBtn">Get Suggestion</button>
       <button class="action secondary" id="decideBtn">Decide For Me</button>
     </section>
-    <p class="status" id="statusText"></p>
+  <p class="status" id="statusText" aria-live="polite"></p>
     <p class="ready-text" id="readyText">Your quick meal is ready</p>
-    <p class="tap-hint" id="tapHint">Tap a dish to start cooking</p>
+  <p class="tap-hint" id="tapHint">Select a dish to start cooking</p>
 
     <section class="results" id="results"></section>
   </main>
 
-  <div class="modal-overlay" id="recipeModal">
+<div class="modal-overlay" id="recipeModal" role="dialog" aria-modal="true" aria-labelledby="modalDishName">
     <section class="modal">
       <div class="modal-head">
         <h2 class="modal-title" id="modalDishName">Recipe</h2>
-        <button class="close-btn" id="closeModalBtn">Close</button>
+      <button class="close-btn" id="closeModalBtn" aria-label="Close modal">Close</button>
       </div>
       <p class="step-label" id="stepCountLabel">Step 1</p>
       <p class="step-text" id="stepText">Loading...</p>
@@ -360,6 +375,7 @@
     const nextStepBtn = document.getElementById("nextStepBtn");
     const closeModalBtn = document.getElementById("closeModalBtn");
 
+    let lastActiveElement = null;
     let modalSteps = [];
     let currentStepIndex = 0;
     const LAST_MODE_KEY = "foodai_last_mode";
@@ -393,7 +409,9 @@
 
     function setSelected(group, value) {
       document.querySelectorAll(`[data-group="${group}"]`).forEach((btn) => {
-        btn.classList.toggle("selected", btn.dataset.value === value);
+        const isSelected = btn.dataset.value === value;
+        btn.classList.toggle("selected", isSelected);
+        btn.setAttribute("aria-pressed", isSelected);
       });
     }
 
@@ -431,6 +449,9 @@
       visibleItems.forEach((item, index) => {
         const card = document.createElement("article");
         card.className = "card";
+        card.tabIndex = 0;
+        card.role = "button";
+        card.ariaLabel = `View recipe for ${item.name}`;
         if (mode === "decide" && index === 0) {
           card.classList.add("highlighted");
           card.classList.add("best-choice");
@@ -443,9 +464,16 @@
           <p class="meta">Score: ${item.score}</p>
           <p class="why"><strong>Why this dish:</strong> ${item.why}</p>
         `;
-        card.addEventListener("click", () => {
+        const openModal = () => {
           trackInteraction("cook", item.id);
           openRecipeModal(item.id);
+        };
+        card.addEventListener("click", openModal);
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openModal();
+          }
         });
         resultsContainer.appendChild(card);
         trackInteraction("view", item.id);
@@ -467,6 +495,8 @@
         return;
       }
 
+      lastActiveElement = document.activeElement;
+
       try {
         const response = await fetch(apiUrl(`/recipe/${recipeId}`), {
           method: "GET",
@@ -482,6 +512,7 @@
         currentStepIndex = 0;
         updateModalStep();
         recipeModal.classList.add("open");
+        closeModalBtn.focus();
       } catch (error) {
         statusText.textContent = "Could not load cooking steps right now.";
       }
@@ -489,6 +520,9 @@
 
     function closeRecipeModal() {
       recipeModal.classList.remove("open");
+      if (lastActiveElement) {
+        lastActiveElement.focus();
+      }
     }
 
     async function getSuggestions(mode = "normal") {
@@ -542,7 +576,23 @@
         closeRecipeModal();
       }
     });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && recipeModal.classList.contains("open")) {
+        closeRecipeModal();
+      }
+    });
+
+    function initAria() {
+      document.querySelectorAll(".choice-btn.selected").forEach((btn) => {
+        btn.setAttribute("aria-pressed", "true");
+      });
+      document.querySelectorAll(".choice-btn:not(.selected)").forEach((btn) => {
+        btn.setAttribute("aria-pressed", "false");
+      });
+    }
+
     bindChoiceButtons();
+    initAria();
     getSuggestions(getInitialMode());
   </script>
 </body>
